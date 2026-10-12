@@ -24,11 +24,11 @@
         }
 
         /* 5 FARKLI TEMA TANIMI */
-        body.theme-cyber { --bg-color: #0b0f19; --sidebar-bg: rgba(15, 22, 36, 0.98); --accent-gradient: linear-gradient(135deg, #00ffaa, #00aaff); }
-        body.theme-matrix { --bg-color: #030f07; --sidebar-bg: rgba(5, 20, 10, 0.98); --accent-gradient: linear-gradient(135deg, #00ff66, #00aa44); }
-        body.theme-sunset { --bg-color: #160b14; --sidebar-bg: rgba(25, 12, 22, 0.98); --accent-gradient: linear-gradient(135deg, #ff5588, #ffaa00); }
-        body.theme-deepspace { --bg-color: #0a0a16; --sidebar-bg: rgba(14, 14, 28, 0.98); --accent-gradient: linear-gradient(135deg, #7928ca, #ff0080); }
-        body.theme-minimal { --bg-color: #121212; --sidebar-bg: rgba(20, 20, 20, 0.98); --accent-gradient: linear-gradient(135deg, #ffffff, #888888); }
+        body.theme-cyber { --bg-color: #0b0f19; --sidebar-bg: rgba(15, 22, 36, 0.98); --accent-gradient: linear-gradient(135deg, #00ffaa, #00aaff); --image-accent: #00d2ff; }
+        body.theme-matrix { --bg-color: #030f07; --sidebar-bg: rgba(5, 20, 10, 0.98); --accent-gradient: linear-gradient(135deg, #00ff66, #00aa44); --image-accent: #00ff66; }
+        body.theme-sunset { --bg-color: #160b14; --sidebar-bg: rgba(25, 12, 22, 0.98); --accent-gradient: linear-gradient(135deg, #ff5588, #ffaa00); --image-accent: #ff8a65; }
+        body.theme-deepspace { --bg-color: #0a0a16; --sidebar-bg: rgba(14, 14, 28, 0.98); --accent-gradient: linear-gradient(135deg, #7928ca, #ff0080); --image-accent: #d946ef; }
+        body.theme-minimal { --bg-color: #121212; --sidebar-bg: rgba(20, 20, 20, 0.98); --accent-gradient: linear-gradient(135deg, #ffffff, #888888); --image-accent: #e2e8f0; }
 
         * {
             margin: 0;
@@ -860,32 +860,71 @@
             text-align: right;
         }
         .image-generating {
-            animation: image-pulse 1s ease-in-out infinite;
-        }
-        @keyframes image-pulse {
-            50% { opacity: 0.55; }
+            box-shadow: 0 0 0 1px var(--image-accent), 0 0 18px color-mix(in srgb, var(--image-accent) 45%, transparent);
         }
         .image-generation-status {
-            position: relative;
             display: flex;
             align-items: center;
-            min-height: 44px;
-            padding-left: 44px;
+            min-height: 78px;
+            padding: 12px 16px;
+            gap: 14px;
+            border: 1px solid color-mix(in srgb, var(--image-accent) 36%, transparent);
+            box-shadow: inset 0 0 24px color-mix(in srgb, var(--image-accent) 7%, transparent);
         }
-        .image-generation-status::before {
-            content: '';
+        .image-generation-status::before { content: none; }
+        .image-generation-mark {
+            position: relative;
+            flex: 0 0 48px;
+            width: 48px;
+            height: 48px;
+            display: grid;
+            place-items: center;
+            color: var(--image-accent);
+        }
+        .image-generation-orbit,
+        .image-generation-halo {
             position: absolute;
-            left: 16px;
-            width: 18px;
-            height: 18px;
-            border: 2px solid rgba(255, 255, 255, 0.22);
-            border-top-color: #ff8ac4;
-            border-right-color: #ff8ac4;
+            inset: 0;
             border-radius: 50%;
-            animation: image-spinner 0.8s linear infinite;
         }
-        @keyframes image-spinner {
+        .image-generation-orbit {
+            border: 2px solid color-mix(in srgb, var(--image-accent) 18%, transparent);
+            border-top-color: var(--image-accent);
+            border-right-color: var(--image-accent);
+            animation: image-orbit 1.7s cubic-bezier(0.6, 0.1, 0.4, 0.9) infinite;
+        }
+        .image-generation-halo {
+            inset: 5px;
+            border: 1px solid color-mix(in srgb, var(--image-accent) 62%, transparent);
+            box-shadow: 0 0 14px color-mix(in srgb, var(--image-accent) 38%, transparent);
+            animation: image-halo 2.2s ease-in-out infinite;
+        }
+        .image-generation-lion {
+            position: relative;
+            z-index: 1;
+            width: 25px;
+            height: 25px;
+            filter: drop-shadow(0 0 5px var(--image-accent));
+        }
+        .image-generation-copy {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .image-generation-copy strong {
+            color: var(--image-accent);
+            font-size: 13px;
+            letter-spacing: 0.02em;
+        }
+        .image-generation-copy span {
+            color: var(--text-muted);
+            font-size: 12px;
+        }
+        @keyframes image-orbit {
             to { transform: rotate(360deg); }
+        }
+        @keyframes image-halo {
+            50% { transform: scale(0.86); opacity: 0.56; }
         }
         .think-duration {
             display: flex;
@@ -2373,7 +2412,8 @@
         const targetMsg = currentChat.messages[msgIndex];
         if (targetMsg && targetMsg.sender === 'user') {
             cancelPendingResponse();
-            document.getElementById('userInput').value = targetMsg.text;
+            document.getElementById('userInput').value = targetMsg.imageGenerationPrompt
+                || String(targetMsg.text || '').replace(/^\s*Görsel oluştur\s*:\s*/i, '');
             currentChat.messages.splice(msgIndex, 1);
             if (currentChat.messages[msgIndex] && currentChat.messages[msgIndex].sender === 'ai') {
                 currentChat.messages.splice(msgIndex, 1);
@@ -3186,9 +3226,11 @@
         }
     }
 
-    async function generateImage() {
+    async function generateImage(promptOverride = null) {
         const inputEl = document.getElementById('userInput');
-        const prompt = inputEl.value.trim();
+        const prompt = (promptOverride === null
+            ? inputEl.value.replace(/^\s*Görsel oluştur\s*:\s*/i, '')
+            : String(promptOverride)).trim();
 
         if (pendingImageEdit) return;
         if (imageGenerating) {
@@ -3222,7 +3264,8 @@
         const startStamp = Date.now();
         promptChat.messages.push({
             sender: 'user',
-            text: `Görsel oluştur: ${prompt}`,
+            text: prompt,
+            imageGenerationPrompt: prompt,
             timestamp: startStamp
         });
         promptChat.messages.push({
@@ -3232,13 +3275,13 @@
             timestamp: startStamp + 1
         });
         const placeholderIndex = promptChat.messages.length - 1;
-        inputEl.value = '';
+        if (promptOverride === null) inputEl.value = '';
         saveToStorage();
         renderChatList();
         renderMessages();
 
         const finishPlaceholder = (message) => {
-            const chat = chats.find(c => c.id === activeChatId);
+            const chat = chats.find(c => c.id === promptChat.id);
             if (!chat) return;
             chat.messages[placeholderIndex] = message;
             saveToStorage();
@@ -3265,7 +3308,12 @@
                 finishPlaceholder({
                     sender: 'ai',
                     text: 'İşte istediğin görsel:',
-                    images: [{ url: brandedImage, name: prompt, generated: true }],
+                    images: [{
+                        url: brandedImage,
+                        source_url: data.image_url,
+                        name: prompt,
+                        generated: true
+                    }],
                     timestamp: Date.now()
                 });
             } else {
@@ -3594,6 +3642,19 @@
         const aiMessage = currentChat.messages[aiMsgIndex];
         const userMessage = currentChat.messages[userMsgIndex];
         if (!aiMessage || aiMessage.sender !== 'ai' || userMsgIndex < 0 || !userMessage) return;
+        const legacyImagePrompt = String(userMessage.text || '').match(
+            /^\s*Görsel oluştur\s*:\s*(.+)$/i
+        );
+        const imagePrompt = userMessage.imageGenerationPrompt
+            || (legacyImagePrompt && legacyImagePrompt[1].trim());
+        if (imagePrompt) {
+            if (imageGenerating || streamBusy) return;
+            currentChat.messages.splice(userMsgIndex, 2);
+            saveToStorage();
+            renderMessages();
+            await generateImage(imagePrompt);
+            return;
+        }
         const replay = { ...userMessage };
         let replayImages;
         try {
@@ -3672,8 +3733,20 @@
                 msgDiv.classList.add('image-generation-status');
                 msgDiv.setAttribute('role', 'status');
                 msgDiv.setAttribute('aria-live', 'polite');
+                msgDiv.innerHTML = `
+                    <span class="image-generation-mark" aria-hidden="true">
+                        <span class="image-generation-orbit"></span>
+                        <span class="image-generation-halo"></span>
+                        <span class="image-generation-lion">${LION_SVG_HTML}</span>
+                    </span>
+                    <span class="image-generation-copy">
+                        <strong>Aslan Parçası özenle hazırlıyor</strong>
+                        <span>İsteğine uygun, tamamlanmış bir görsel oluşturuluyor…</span>
+                    </span>
+                `;
+            } else {
+                msgDiv.innerHTML = renderMarkdown(sanitizeAiText(text));
             }
-            msgDiv.innerHTML = renderMarkdown(sanitizeAiText(text));
             (attachments.images || []).forEach((image, imageIndex) => {
                 if (!image.base64 && !image.url) return;
                 const imageEl = document.createElement('img');

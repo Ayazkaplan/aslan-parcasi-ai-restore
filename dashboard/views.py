@@ -432,20 +432,14 @@ def enhance_image_prompt(prompt):
         "perimeter, and thin rubber base visible only along the edge. The pad lies flat "
         "and level, centered on a bright light-gray tabletop; use clean, even softbox "
         "lighting, balanced exposure, crisp fabric detail, and a natural contact shadow. "
+        "Create a carefully art-directed, fully finished commercial product photograph "
+        "with deliberate framing and refined fine details, not a rushed or unfinished result. "
         "Keep the pad geometrically straight and undistorted. Exclude the computer mouse "
         "device, hands, keyboard, other electronics, text, logos, packaging, extra objects, "
         "and watermarks. Do not make the image dark or underexposed. Match the requested "
         "color and design exactly. "
         f"Exact user brief: {topic}"
     )
-
-  if re.search(
-      r"\b(brand(?:ed)?|bottle|can|soda|cola|şişe\w*|kutu\w*|ambalaj\w*|"
-      r"markalı|markali|packaging|label)\b",
-      raw,
-      re.IGNORECASE,
-  ):
-    topic = f"{topic}, clearly visible branded product packaging, readable label, actual bottle/can design, not a generic cup, centered in frame"
 
   if re.search(
       r"\b(brand(?:ed)?|bottle|can|soda|cola|şişe\w*|kutu\w*|ambalaj\w*|"
@@ -469,7 +463,13 @@ def enhance_image_prompt(prompt):
   detail_prefix = ""
   if not any(token.lower() in topic.lower() for token in ["photorealistic", "realistic", "cinematic", "8k", "detailed"]):
     detail_prefix = ", ".join(descriptors)
-  return f"{topic}, {detail_prefix}".strip(", ")
+  finishing_direction = (
+      "carefully art-directed and fully finished, with a clear focal subject, "
+      "intentional balanced framing, refined realistic textures, coherent lighting "
+      "and background, and complete fine details; avoid rushed, unfinished, blurry, "
+      "or low-detail results"
+  )
+  return f"{topic}, {detail_prefix}, {finishing_direction}".strip(", ")
 
 
 def build_flux_image_params(prompt, seed=None, width=1024, height=1024):
@@ -2964,7 +2964,7 @@ def generate_image_with_cloudflare(prompt, source_image=None):
         raise ValueError("Cloudflare boş görsel dosyası döndürdü.")
       return f"data:{mime_type};base64,{encoded_image}"
 
-    payload = {"prompt": prompt, "num_steps": 4}
+    payload = {"prompt": enhance_image_prompt(prompt), "num_steps": 4}
     response = requests.post(
         endpoint,
         headers={

@@ -853,13 +853,21 @@ class ImageGenerationTests(TestCase):
         )
         self.assertIn("/@cf/bytedance/stable-diffusion-xl-lightning", post.call_args.args[0])
         self.assertEqual(post.call_args.kwargs["json"], {
-            "prompt": "Photorealistic red mousepad",
+            "prompt": views.enhance_image_prompt("Photorealistic red mousepad"),
             "num_steps": 4,
         })
+        self.assertIn("carefully art-directed", post.call_args.kwargs["json"]["prompt"])
         self.assertEqual(
             post.call_args.kwargs["headers"]["Authorization"],
             "Bearer private-token",
         )
+
+    def test_image_prompt_enhancement_does_not_duplicate_branded_product_direction(self):
+        prompt = views.enhance_image_prompt("Gerçekçi Coca-Cola şişesi")
+
+        self.assertIn("clearly visible branded product packaging", prompt)
+        self.assertEqual(prompt.count("clearly visible branded product packaging"), 1)
+        self.assertIn("carefully art-directed", prompt)
 
     def test_cloudflare_requires_server_side_credentials(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -916,15 +924,25 @@ class ImageGenerationTests(TestCase):
 
         self.assertIn("Bu fotoğrafı düzenlemeye devam et", template)
         self.assertIn("source_image: editing.sourceImage", template)
+        self.assertIn("source_url: data.image_url", template)
         self.assertIn("generateButton.disabled = editing", template)
         self.assertIn("selection_mask: maskCanvas.toDataURL('image/png')", template)
         self.assertIn("image-brush-editor", template)
         self.assertIn("Fırçayla düzenlenecek alanı seç", template)
         self.assertIn("if (pendingImageEdit) {", template)
         edit_flow = template.split("async function continueEditingImage()", 1)[1].split(
-            "async function generateImage()", 1
+            "async function generateImage(", 1
         )[0]
         self.assertNotIn("addGeneratedImageBranding", edit_flow)
+
+    def test_generated_image_retry_uses_the_image_api_and_plain_prompt(self):
+        template_path = Path(__file__).parent / "templates" / "dashboard" / "index.html"
+        template = template_path.read_text(encoding="utf-8")
+
+        self.assertIn("imageGenerationPrompt: prompt", template)
+        self.assertIn("await generateImage(imagePrompt)", template)
+        self.assertIn("targetMsg.imageGenerationPrompt", template)
+        self.assertIn("text: prompt,", template)
 
     def test_image_generation_placeholder_shows_an_accessible_animated_status(self):
         template_path = Path(__file__).parent / "templates" / "dashboard" / "index.html"
@@ -933,7 +951,10 @@ class ImageGenerationTests(TestCase):
         self.assertIn("loadingImage: true", template)
         self.assertIn("image-generation-status", template)
         self.assertIn("aria-live', 'polite'", template)
-        self.assertIn("@keyframes image-spinner", template)
+        self.assertIn("image-generation-orbit", template)
+        self.assertIn("@keyframes image-orbit", template)
+        self.assertIn("--image-accent", template)
+        self.assertIn("Aslan Parçası özenle hazırlıyor", template)
 
     def test_brush_edit_changes_only_selected_pixels_without_using_ai_quota(self):
         source = views.Image.new("RGBA", (8, 4), "orange")
