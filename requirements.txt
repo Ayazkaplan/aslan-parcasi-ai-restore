@@ -1,0 +1,10 @@
+Django>=6.1.1,<7
+openai>=1.40.0
+Pillow>=10.0.0
+gunicorn>=21.0.0
+pypdf
+python-docx
+psycopg[binary]
+requests
+beautifulsoup4
+python-dotenv>=1.0.1
