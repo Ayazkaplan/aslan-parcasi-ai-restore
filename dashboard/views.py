@@ -12,7 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 import requests
-from PIL import Image
+from PIL import Image, ImageOps
 from collections import namedtuple
 from html import unescape
 from urllib.parse import parse_qs, quote, unquote, urlparse
@@ -43,6 +43,7 @@ except ImportError:
 MAX_CHAT_FILE_BYTES = 50 * 1024 * 1024
 MAX_CHAT_IMAGE_BYTES = 3 * 1024 * 1024
 MAX_IMAGE_EDIT_BYTES = 20 * 1024 * 1024
+MAX_LOCAL_EDIT_PIXELS = 16_000_000
 # Büyük dosya dökümleri yanıtı dakikalarca geciktirir; bu yüzden bilinçli olarak küçük.
 MAX_EXTRACTED_TEXT = 24_000
 IMAGE_REQUEST_MIN_INTERVAL = 8
@@ -2763,7 +2764,7 @@ def validate_image_prompt(prompt):
 
 
 def parse_image_data_url(image_url):
-  """Validate a generated data URL before passing its image bytes to a model."""
+  """Validate an image data URL before processing the image."""
   if not isinstance(image_url, str):
     raise ValueError("Düzenlenecek görsel verisi bulunamadı.")
   match = re.fullmatch(
@@ -2783,6 +2784,64 @@ def parse_image_data_url(image_url):
   if len(image_bytes) > MAX_IMAGE_EDIT_BYTES:
     raise ValueError("Düzenlenecek görsel 20 MB sınırını aşıyor.")
   return {"mime_type": match.group(1).lower(), "data": encoded}
+
+
+def generate_local_recolor(source_image, selection_mask, target_color):
+  """Recolor only the brushed area while retaining its original light and texture."""
+  if not isinstance(target_color, str) or not re.fullmatch(
+      r"#[0-9a-fA-F]{6}", target_color
+  ):
+    raise ValueError("Lütfen geçerli bir renk seç.")
+  try:
+    source_bytes = base64.b64decode(source_image["data"], validate=True)
+    mask_bytes = base64.b64decode(selection_mask["data"], validate=True)
+    with Image.open(io.BytesIO(source_bytes)) as source_file:
+      if source_file.width * source_file.height > MAX_LOCAL_EDIT_PIXELS:
+        raise ValueError("Düzenlenecek görselin çözünürlüğü çok yüksek.")
+      source_with_alpha = ImageOps.exif_transpose(source_file).convert("RGBA")
+      source = source_with_alpha.convert("RGB")
+      source_alpha = source_with_alpha.getchannel("A")
+    with Image.open(io.BytesIO(mask_bytes)) as mask_file:
+      if mask_file.width * mask_file.height > MAX_LOCAL_EDIT_PIXELS:
+        raise ValueError("Fırça seçiminin çözünürlüğü çok yüksek.")
+      if mask_file.size != source.size:
+        raise ValueError("Fırça seçimi ile kaynak görselin boyutları uyuşmuyor.")
+      mask = (
+          mask_file.getchannel("A")
+          if "A" in mask_file.getbands()
+          else mask_file.convert("L")
+      )
+    bounds = mask.getbbox()
+    if bounds is None:
+      raise ValueError("Fırçayla en az bir alan seçmelisin.")
+  except ValueError:
+    raise
+  except (OSError, Image.DecompressionBombError) as error:
+    raise ValueError("Kaynak görsel veya fırça seçimi okunamadı.") from error
+
+  target_rgb = tuple(int(target_color[index:index + 2], 16) for index in (1, 3, 5))
+  target_hue, target_saturation, target_value = Image.new(
+      "RGB", (1, 1), target_rgb
+  ).convert("HSV").getpixel((0, 0))
+  source_crop = source.crop(bounds)
+  mask_crop = mask.crop(bounds)
+  hue, saturation, value = source_crop.convert("HSV").split()
+  value_scale = 0.15 + 0.85 * (target_value / 255)
+  recolored_hsv = Image.merge(
+      "HSV",
+      (
+          Image.new("L", source_crop.size, target_hue),
+          Image.new("L", source_crop.size, target_saturation),
+          value.point([round(channel * value_scale) for channel in range(256)]),
+      ),
+  )
+  result = source.copy()
+  result.paste(recolored_hsv.convert("RGB"), bounds, mask_crop)
+  result.putalpha(source_alpha)
+  output = io.BytesIO()
+  result.save(output, format="PNG", optimize=True)
+  encoded = base64.b64encode(output.getvalue()).decode("ascii")
+  return f"data:image/png;base64,{encoded}"
 
 
 def _image_edit_instruction(prompt):
@@ -3884,7 +3943,7 @@ def api_debug(request):
           "normal": GEMINI_MODEL,
           "fast": GEMINI_FAST_MODEL,
           "image": "@cf/bytedance/stable-diffusion-xl-lightning",
-          "image_edit": CLOUDFLARE_IMAGE_EDIT_MODEL,
+          "image_edit": "local-brush-recolor",
       },
       "chat_priority": [
           f"{endpoint.provider}:{endpoint.models[0]}"
@@ -3945,6 +4004,26 @@ def api_image_generate(request):
     except ValueError as image_error:
       return JsonResponse({"error": str(image_error)}, status=400)
 
+    if source_image:
+      selection_mask_url = data.get("selection_mask")
+      target_color = data.get("target_color")
+      try:
+        selection_mask = parse_image_data_url(selection_mask_url)
+        image_url = generate_local_recolor(
+            source_image,
+            selection_mask,
+            target_color,
+        )
+      except ValueError as image_error:
+        return JsonResponse({"error": str(image_error)}, status=400)
+      except Exception as image_error:
+        logger.exception("Local image recoloring failed")
+        return JsonResponse(
+            {"error": friendly_api_error(image_error)},
+            status=500,
+        )
+      return JsonResponse({"status": "success", "image_url": image_url})
+
     now = time.monotonic()
     with _image_request_lock:
       previous_request = _last_image_request_at.get(request.user.pk, 0)
@@ -3967,10 +4046,7 @@ def api_image_generate(request):
 
     image_succeeded = False
     try:
-      if source_image:
-        image_url = generate_image_with_cloudflare(prompt, source_image)
-      else:
-        image_url = generate_image_with_cloudflare(prompt)
+      image_url = generate_image_with_cloudflare(prompt)
       image_succeeded = True
       return JsonResponse({"status": "success", "image_url": image_url})
     except ImageUnavailableError as img_error:

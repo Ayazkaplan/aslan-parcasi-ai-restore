@@ -917,8 +917,14 @@ class ImageGenerationTests(TestCase):
         self.assertIn("Bu fotoğrafı düzenlemeye devam et", template)
         self.assertIn("source_image: editing.sourceImage", template)
         self.assertIn("generateButton.disabled = editing", template)
+        self.assertIn("selection_mask: maskCanvas.toDataURL('image/png')", template)
+        self.assertIn("image-brush-editor", template)
+        self.assertIn("Fırçayla düzenlenecek alanı seç", template)
         self.assertIn("if (pendingImageEdit) {", template)
-        self.assertIn("return continueEditingImage(text);", template)
+        edit_flow = template.split("async function continueEditingImage()", 1)[1].split(
+            "async function generateImage()", 1
+        )[0]
+        self.assertNotIn("addGeneratedImageBranding", edit_flow)
 
     def test_image_generation_placeholder_shows_an_accessible_animated_status(self):
         template_path = Path(__file__).parent / "templates" / "dashboard" / "index.html"
@@ -929,67 +935,68 @@ class ImageGenerationTests(TestCase):
         self.assertIn("aria-live', 'polite'", template)
         self.assertIn("@keyframes image-spinner", template)
 
-    def test_image_edit_api_passes_the_selected_source_image_to_the_edit_provider(self):
-        prompt = "Sadece arka planı açık mavi yap; nesneye dokunma."
-        encoded = "cG5nLWJ5dGVz"
-        with patch(
-            "dashboard.views.generate_image_with_cloudflare",
-            return_value="data:image/png;base64,bmV3",
-        ) as edit:
+    def test_brush_edit_changes_only_selected_pixels_without_using_ai_quota(self):
+        source = views.Image.new("RGBA", (8, 4), "orange")
+        source.putpixel((6, 1), (10, 20, 30, 0))
+        source_buffer = io.BytesIO()
+        source.save(source_buffer, format="PNG")
+        mask = views.Image.new("RGBA", (8, 4), (0, 0, 0, 0))
+        for x in range(4):
+            for y in range(4):
+                mask.putpixel((x, y), (255, 255, 255, 255))
+        mask_buffer = io.BytesIO()
+        mask.save(mask_buffer, format="PNG")
+        source_url = "data:image/png;base64," + base64.b64encode(
+            source_buffer.getvalue()
+        ).decode("ascii")
+        mask_url = "data:image/png;base64," + base64.b64encode(
+            mask_buffer.getvalue()
+        ).decode("ascii")
+
+        with patch("dashboard.views.generate_image_with_cloudflare") as generate:
             response = self.client.post(
                 reverse("api_image_generate"),
                 data=json.dumps({
-                    "prompt": prompt,
-                    "source_image": f"data:image/png;base64,{encoded}",
+                    "prompt": "Fırçayla seçilen alanın rengini değiştir.",
+                    "source_image": source_url,
+                    "selection_mask": mask_url,
+                    "target_color": "#000000",
                 }),
                 content_type="application/json",
             )
 
         self.assertEqual(response.status_code, 200)
-        edit.assert_called_once_with(
-            prompt,
-            {"mime_type": "image/png", "data": encoded},
+        generate.assert_not_called()
+        edited_bytes = base64.b64decode(response.json()["image_url"].split(",", 1)[1])
+        with views.Image.open(io.BytesIO(edited_bytes)) as edited:
+            self.assertEqual(edited.getpixel((1, 1)), (38, 38, 38, 255))
+            self.assertEqual(edited.getpixel((6, 1)), (10, 20, 30, 0))
+        self.assertFalse(ImageDailyUsage.objects.filter(user=self.user).exists())
+
+    def test_brush_edit_rejects_an_empty_mask(self):
+        source = views.Image.new("RGB", (4, 4), "orange")
+        mask = views.Image.new("RGBA", (4, 4), (0, 0, 0, 0))
+        source_buffer = io.BytesIO()
+        mask_buffer = io.BytesIO()
+        source.save(source_buffer, format="PNG")
+        mask.save(mask_buffer, format="PNG")
+        to_data_url = lambda value: "data:image/png;base64," + base64.b64encode(
+            value.getvalue()
+        ).decode("ascii")
+
+        response = self.client.post(
+            reverse("api_image_generate"),
+            data=json.dumps({
+                "prompt": "Fırçayla seçilen alanın rengini değiştir.",
+                "source_image": to_data_url(source_buffer),
+                "selection_mask": to_data_url(mask_buffer),
+                "target_color": "#000000",
+            }),
+            content_type="application/json",
         )
 
-    def test_cloudflare_edits_source_image_using_a_clear_english_instruction(self):
-        response = Mock()
-        response.status_code = 200
-        response.headers = {"Content-Type": "application/json"}
-        response.json.return_value = {
-            "result": {"image": base64.b64encode(b"edited-png").decode("ascii")},
-        }
-        image_buffer = io.BytesIO()
-        views.Image.new("RGB", (640, 320), "orange").save(image_buffer, format="PNG")
-        source_bytes = image_buffer.getvalue()
-        original = {
-            "mime_type": "image/png",
-            "data": base64.b64encode(source_bytes).decode("ascii"),
-        }
-        with patch.dict(os.environ, {
-            "CLOUDFLARE_ACCOUNT_ID": "account-id",
-            "CLOUDFLARE_API_TOKEN": "private-token",
-        }), patch("dashboard.views.requests.post", return_value=response) as post:
-            image_url = views.generate_image_with_cloudflare(
-                "Kedinin tüy rengini siyah yap; kediyi, oturuşunu ve sade arka planı aynı bırak",
-                original,
-            )
-
-        self.assertEqual(image_url, "data:image/png;base64,ZWRpdGVkLXBuZw==")
-        self.assertIn("/@cf/black-forest-labs/flux-2-klein-4b", post.call_args.args[0])
-        request_data = post.call_args.kwargs["data"]
-        self.assertEqual(request_data["width"], "1024")
-        self.assertEqual(request_data["height"], "512")
-        request_image = post.call_args.kwargs["files"]["input_image_0"]
-        self.assertEqual(request_image[1], source_bytes)
-        self.assertEqual(request_image[2], "image/png")
-        self.assertIn(
-            "Change only the existing cat's fur color to black",
-            request_data["prompt"],
-        )
-        self.assertIn(
-            "exact same subject, species, identity, face, pose",
-            request_data["prompt"],
-        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("en az bir alan", response.json()["error"])
 
     def test_meaningless_image_prompt_returns_actionable_error(self):
         with patch("dashboard.views.generate_image_with_cloudflare") as generate:
@@ -1002,26 +1009,6 @@ class ImageGenerationTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("anlaşılır görünmüyor", response.json()["error"])
         generate.assert_not_called()
-
-    def test_image_api_reports_cloudflare_edit_failure_without_spending_quota(self):
-        with patch(
-            "dashboard.views.generate_image_with_cloudflare",
-            side_effect=views.ImageUnavailableError("Cloudflare edit unavailable"),
-        ):
-            response = self.client.post(
-                reverse("api_image_generate"),
-                data=json.dumps({
-                    "prompt": "Kedinin rengini siyah yap",
-                    "source_image": "data:image/png;base64,c291cmNl",
-                }),
-                content_type="application/json",
-            )
-
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["error"], "Cloudflare edit unavailable")
-        usage = ImageDailyUsage.objects.get(user=self.user)
-        self.assertEqual(usage.successful_count, 0)
-        self.assertEqual(usage.pending_count, 0)
 
     def test_daily_limit_is_fifteen_successes_and_is_per_user(self):
         usage = ImageDailyUsage.objects.create(

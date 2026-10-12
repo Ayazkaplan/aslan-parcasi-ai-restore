@@ -743,6 +743,66 @@
             cursor: pointer;
         }
 
+        .image-brush-editor {
+            position: fixed;
+            inset: 0;
+            z-index: 20000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+            background: rgba(0, 0, 0, 0.82);
+        }
+
+        .image-brush-card {
+            width: min(900px, 100%);
+            max-height: 94vh;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            padding: 16px;
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+            background: var(--sidebar-bg);
+            color: #e2e8f0;
+        }
+
+        .image-brush-stage {
+            position: relative;
+            min-height: 120px;
+            max-height: 68vh;
+            display: grid;
+            place-items: center;
+            overflow: auto;
+            background: #090f1d;
+            touch-action: none;
+        }
+
+        .image-brush-stage canvas {
+            display: block;
+            max-width: 100%;
+            max-height: 68vh;
+        }
+
+        #imageBrushMask {
+            position: absolute;
+            inset: 0;
+            margin: auto;
+            pointer-events: none;
+            opacity: 0.6;
+        }
+
+        .image-brush-controls,
+        .image-brush-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .image-brush-actions { justify-content: flex-end; }
+        .image-brush-controls input[type="range"] { flex: 1; min-width: 120px; }
+
         .image-edit-continue-btn:disabled {
             opacity: 0.55;
             cursor: not-allowed;
@@ -1594,9 +1654,25 @@
                 <button type="button" class="image-edit-cancel-btn" onclick="cancelImageEdit()">İptal</button>
             </div>
 
-            <div class="image-edit-mode" id="imageEditMode" style="display: none;">
-                <span id="imageEditModeLabel"></span>
-                <button type="button" class="image-edit-cancel-btn" onclick="cancelImageEdit()">İptal</button>
+            <div class="image-brush-editor" id="imageBrushEditor" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="imageBrushTitle">
+                <div class="image-brush-card">
+                    <h3 id="imageBrushTitle">Değişecek alanı fırçayla boya</h3>
+                    <div class="image-brush-stage" id="imageBrushStage">
+                        <canvas id="imageBrushSource"></canvas>
+                        <canvas id="imageBrushMask"></canvas>
+                    </div>
+                    <div class="image-brush-controls">
+                        <label for="imageBrushColor">Yeni renk</label>
+                        <input type="color" id="imageBrushColor" value="#000000" aria-label="Yeni renk">
+                        <label for="imageBrushSize">Fırça</label>
+                        <input type="range" id="imageBrushSize" min="8" max="160" value="48">
+                        <button type="button" class="image-edit-cancel-btn" onclick="clearImageBrush()">Seçimi temizle</button>
+                    </div>
+                    <div class="image-brush-actions">
+                        <button type="button" class="image-edit-cancel-btn" onclick="closeImageBrushEditor()">İptal</button>
+                        <button type="button" class="modal-btn save" id="applyImageBrush" onclick="continueEditingImage()">Uygula</button>
+                    </div>
+                </div>
             </div>
             <div class="chat-input-container">
                 <div class="media-buttons" id="mediaButtons">
@@ -2877,8 +2953,9 @@
         }
         if (input) {
             input.placeholder = editing
-                ? 'Bu görselde neyi değiştireyim?'
+                ? 'Fırçayla düzenlenecek alanı seç...'
                 : 'Bir şeyler yazın...';
+            input.disabled = editing;
         }
         if (generateButton) {
             generateButton.disabled = editing;
@@ -2889,6 +2966,7 @@
         }
         if (sendButton) {
             sendButton.title = editing ? 'Görsel düzenleme isteğini gönder' : 'Gönder';
+            sendButton.disabled = editing;
             sendButton.setAttribute(
                 'aria-label',
                 editing ? 'Görsel düzenleme isteğini gönder' : 'Gönder'
@@ -2920,27 +2998,102 @@
         };
         updateImageEditMode();
         renderMessages();
-        document.getElementById('userInput').focus();
+        loadImageBrushEditor(sourceImage);
     }
 
     function cancelImageEdit() {
         if (imageGenerating) return;
         pendingImageEdit = null;
+        closeImageBrushEditor();
         updateImageEditMode();
         renderMessages();
     }
 
-    async function continueEditingImage(customPrompt = null) {
-        const inputEl = document.getElementById('userInput');
-        const prompt = customPrompt !== null ? String(customPrompt).trim() : inputEl.value.trim();
-        if (!pendingImageEdit) return;
-        if (!prompt) {
-            alert('Düzenlemek istediğin değişikliği yaz; örneğin "arka planı açık mavi yap".');
-            inputEl.focus();
+    function loadImageBrushEditor(sourceImage) {
+        const image = new Image();
+        image.onload = () => {
+            const sourceCanvas = document.getElementById('imageBrushSource');
+            const maskCanvas = document.getElementById('imageBrushMask');
+            sourceCanvas.width = maskCanvas.width = image.naturalWidth;
+            sourceCanvas.height = maskCanvas.height = image.naturalHeight;
+            sourceCanvas.getContext('2d').drawImage(image, 0, 0);
+            maskCanvas.getContext('2d').clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+            document.getElementById('imageBrushEditor').style.display = 'flex';
+        };
+        image.onerror = () => {
+            alert('Düzenlenecek görsel yüklenemedi.');
+            cancelImageEdit();
+        };
+        image.src = sourceImage;
+    }
+
+    function closeImageBrushEditor() {
+        const editor = document.getElementById('imageBrushEditor');
+        if (editor) editor.style.display = 'none';
+    }
+
+    function clearImageBrush() {
+        const maskCanvas = document.getElementById('imageBrushMask');
+        maskCanvas.getContext('2d').clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    }
+
+    let paintingImageSelection = false;
+
+    function paintImageSelection(event) {
+        const sourceCanvas = document.getElementById('imageBrushSource');
+        const maskCanvas = document.getElementById('imageBrushMask');
+        const rect = sourceCanvas.getBoundingClientRect();
+        const x = (event.clientX - rect.left) * sourceCanvas.width / rect.width;
+        const y = (event.clientY - rect.top) * sourceCanvas.height / rect.height;
+        const context = maskCanvas.getContext('2d');
+        context.lineCap = 'round';
+        context.lineJoin = 'round';
+        context.lineWidth = Number(document.getElementById('imageBrushSize').value);
+        context.strokeStyle = '#ffffff';
+        context.fillStyle = '#ffffff';
+        if (event.type === 'pointerdown') {
+            paintingImageSelection = true;
+            sourceCanvas.setPointerCapture(event.pointerId);
+            context.beginPath();
+            context.arc(x, y, context.lineWidth / 2, 0, Math.PI * 2);
+            context.fill();
+            context.beginPath();
+            context.moveTo(x, y);
             return;
         }
+        if (!paintingImageSelection) return;
+        context.lineTo(x, y);
+        context.stroke();
+    }
+
+    document.getElementById('imageBrushSource').addEventListener('pointerdown', paintImageSelection);
+    document.getElementById('imageBrushSource').addEventListener('pointermove', paintImageSelection);
+    document.getElementById('imageBrushSource').addEventListener('pointerup', () => {
+        paintingImageSelection = false;
+    });
+    document.getElementById('imageBrushSource').addEventListener('pointercancel', () => {
+        paintingImageSelection = false;
+    });
+
+    async function continueEditingImage() {
+        if (!pendingImageEdit) return;
         if (selectedImages.length || selectedFiles.length || selectedVoiceBlob) {
-            alert('Düzenleme isteğinde yalnızca metin kullan. Ekli görsel veya dosyaları kaldırıp tekrar gönder.');
+            alert('Düzenleme sırasında ekli görsel, dosya veya ses kaydı bulunmamalı.');
+            return;
+        }
+        const maskCanvas = document.getElementById('imageBrushMask');
+        const maskData = maskCanvas.getContext('2d').getImageData(
+            0, 0, maskCanvas.width, maskCanvas.height
+        ).data;
+        let hasSelection = false;
+        for (let index = 3; index < maskData.length; index += 4) {
+            if (maskData[index] > 0) {
+                hasSelection = true;
+                break;
+            }
+        }
+        if (!hasSelection) {
+            alert('Önce değişmesini istediğin alanı fırçayla boya.');
             return;
         }
 
@@ -2953,21 +3106,25 @@
         }
 
         const startStamp = Date.now();
-        currentChat.messages.push({ sender: 'user', text: prompt, timestamp: startStamp });
+        currentChat.messages.push({
+            sender: 'user',
+            text: 'Fırçayla seçilen alanın rengini değiştirmek istiyorum.',
+            timestamp: startStamp
+        });
         currentChat.messages.push({
             sender: 'ai',
-            text: 'Seçtiğin görsel, yazdığın isteğe göre düzenleniyor…',
+            text: 'Yalnızca fırçayla seçtiğin alan düzenleniyor…',
             loadingImage: true,
             timestamp: startStamp + 1
         });
         const placeholderIndex = currentChat.messages.length - 1;
-        inputEl.value = '';
         saveToStorage();
         renderChatList();
         renderMessages();
         imageGenerating = true;
         imageRequestController = new AbortController();
         setSendButtonBusy(true);
+        document.getElementById('applyImageBrush').disabled = true;
         updateImageEditMode();
 
         const finishPlaceholder = (message) => {
@@ -2988,8 +3145,10 @@
                 },
                 credentials: 'same-origin',
                 body: JSON.stringify({
-                    prompt,
-                    source_image: editing.sourceImage
+                    prompt: 'Fırçayla seçilen alanın rengini değiştir.',
+                    source_image: editing.sourceImage,
+                    selection_mask: maskCanvas.toDataURL('image/png'),
+                    target_color: document.getElementById('imageBrushColor').value
                 }),
                 signal: imageRequestController.signal
             });
@@ -2998,13 +3157,13 @@
                 throw new Error(data.error || `Görsel düzenlenemedi (HTTP ${response.status}).`);
             }
 
-            const brandedImage = await addGeneratedImageBranding(data.image_url);
             pendingImageEdit = null;
+            closeImageBrushEditor();
             finishPlaceholder({
                 sender: 'ai',
                 text: 'Düzenlediğim görsel:',
                 images: [{
-                    url: brandedImage,
+                    url: data.image_url,
                     name: editing.name,
                     generated: true
                 }],
@@ -3022,6 +3181,7 @@
             imageGenerating = false;
             imageRequestController = null;
             setSendButtonBusy(false);
+            document.getElementById('applyImageBrush').disabled = false;
             updateImageEditMode();
         }
     }
@@ -3189,7 +3349,7 @@
         const text = customText !== null ? customText : inputEl.value.trim();
 
         if (pendingImageEdit) {
-            return continueEditingImage(text);
+            return;
         }
 
         // Stopping and sending in the same interaction must wait for MediaRecorder.onstop.
