@@ -969,10 +969,10 @@ class ImageGenerationTests(TestCase):
             post.call_args.args[0],
         )
         self.assertEqual(request_data["image_b64"], "c291cmNl")
-        self.assertEqual(request_data["strength"], 0.5)
-        self.assertEqual(request_data["num_steps"], 20)
+        self.assertEqual(request_data["strength"], 0.25)
+        self.assertEqual(request_data["num_steps"], 8)
         self.assertIn("Kedinin rengini siyah yap", request_data["prompt"])
-        self.assertIn("preserve the existing subject", request_data["prompt"])
+        self.assertIn("exact subject and species", request_data["prompt"])
 
     def test_meaningless_image_prompt_returns_actionable_error(self):
         with patch("dashboard.views.generate_image_with_cloudflare") as generate:

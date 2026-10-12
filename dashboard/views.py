@@ -2806,15 +2806,16 @@ def generate_image_with_cloudflare(prompt, source_image=None):
     payload = {"prompt": request_prompt, "num_steps": 4}
     if source_image:
       request_prompt = (
-          "Edit the supplied image. Apply only the requested change; preserve the "
-          "existing subject, composition, and all unmentioned details. "
-          "User's exact instruction: " + prompt
+          "Edit the supplied image. Make only the requested change. Preserve the "
+          "exact subject and species, pose, composition, background, lighting, and "
+          "all other details. Do not replace or reinterpret the subject. "
+          "Requested change: " + prompt
       )
       payload.update({
           "prompt": request_prompt,
           "image_b64": source_image["data"],
-          "num_steps": 20,
-          "strength": 0.5,
+          "num_steps": 8,
+          "strength": 0.25,
       })
     response = requests.post(
         endpoint,
