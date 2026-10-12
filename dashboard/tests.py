@@ -1,5 +1,6 @@
 import base64
 import datetime as dt
+import io
 import json
 import os
 import tempfile
@@ -953,9 +954,17 @@ class ImageGenerationTests(TestCase):
     def test_cloudflare_edits_source_image_using_a_clear_english_instruction(self):
         response = Mock()
         response.status_code = 200
-        response.headers = {"Content-Type": "image/png"}
-        response.content = b"edited-png"
-        original = {"mime_type": "image/png", "data": "c291cmNl"}
+        response.headers = {"Content-Type": "application/json"}
+        response.json.return_value = {
+            "result": {"image": base64.b64encode(b"edited-png").decode("ascii")},
+        }
+        image_buffer = io.BytesIO()
+        views.Image.new("RGB", (640, 320), "orange").save(image_buffer, format="PNG")
+        source_bytes = image_buffer.getvalue()
+        original = {
+            "mime_type": "image/png",
+            "data": base64.b64encode(source_bytes).decode("ascii"),
+        }
         with patch.dict(os.environ, {
             "CLOUDFLARE_ACCOUNT_ID": "account-id",
             "CLOUDFLARE_API_TOKEN": "private-token",
@@ -966,11 +975,13 @@ class ImageGenerationTests(TestCase):
             )
 
         self.assertEqual(image_url, "data:image/png;base64,ZWRpdGVkLXBuZw==")
-        request_data = post.call_args.kwargs["json"]
-        self.assertIn("/@cf/lykon/dreamshaper-8-lcm", post.call_args.args[0])
-        self.assertEqual(request_data["image_b64"], "c291cmNl")
-        self.assertEqual(request_data["strength"], 0.55)
-        self.assertEqual(request_data["num_steps"], 8)
+        self.assertIn("/@cf/black-forest-labs/flux-2-klein-4b", post.call_args.args[0])
+        request_data = post.call_args.kwargs["data"]
+        self.assertEqual(request_data["width"], "1024")
+        self.assertEqual(request_data["height"], "512")
+        request_image = post.call_args.kwargs["files"]["input_image_0"]
+        self.assertEqual(request_image[1], source_bytes)
+        self.assertEqual(request_image[2], "image/png")
         self.assertIn(
             "Change only the existing cat's fur color to black",
             request_data["prompt"],

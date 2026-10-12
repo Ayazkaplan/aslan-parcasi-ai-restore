@@ -12,6 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 import requests
+from PIL import Image
 from collections import namedtuple
 from html import unescape
 from urllib.parse import parse_qs, quote, unquote, urlparse
@@ -47,7 +48,7 @@ MAX_EXTRACTED_TEXT = 24_000
 IMAGE_REQUEST_MIN_INTERVAL = 8
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_FAST_MODEL = "gemini-2.5-flash-lite"
-CLOUDFLARE_IMAGE_EDIT_MODEL = "@cf/lykon/dreamshaper-8-lcm"
+CLOUDFLARE_IMAGE_EDIT_MODEL = "@cf/black-forest-labs/flux-2-klein-4b"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 REASONING_MARKER = "\x00R\x00"
 
@@ -2830,7 +2831,6 @@ def generate_image_with_cloudflare(prompt, source_image=None):
       f"{quote(account_id, safe='')}/ai/run/{model}"
   )
   try:
-    payload = {"prompt": prompt, "num_steps": 4}
     if source_image:
       request_prompt = (
           "Edit the supplied image. Apply only this change: "
@@ -2839,12 +2839,73 @@ def generate_image_with_cloudflare(prompt, source_image=None):
           "composition, background, and lighting. Do not replace or reinterpret "
           "the subject. Leave every other detail unchanged."
       )
-      payload.update({
-          "prompt": request_prompt,
-          "image_b64": source_image["data"],
-          "num_steps": 8,
-          "strength": 0.55,
-      })
+      image_bytes = base64.b64decode(source_image["data"], validate=True)
+      with Image.open(io.BytesIO(image_bytes)) as source:
+        source_width, source_height = source.size
+      scale = 1024 / max(source_width, source_height)
+      width = max(256, round(source_width * scale))
+      height = max(256, round(source_height * scale))
+      response = requests.post(
+          endpoint,
+          headers={"Authorization": f"Bearer {api_token}"},
+          data={
+              "prompt": request_prompt,
+              "width": str(width),
+              "height": str(height),
+          },
+          files={
+              "input_image_0": (
+                  "source-image",
+                  image_bytes,
+                  source_image["mime_type"],
+              ),
+          },
+          timeout=120,
+      )
+      if response.status_code >= 400:
+        detail = (getattr(response, "text", "") or "")[:500]
+        logger.warning(
+            "Cloudflare image model %s returned HTTP %s: %s",
+            model,
+            response.status_code,
+            detail or "no error details",
+        )
+        raise UpstreamHTTPError(
+            response.status_code,
+            detail or "Cloudflare request rejected",
+        )
+      content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
+      if content_type.startswith("image/") and response.content:
+        encoded_image = base64.b64encode(response.content).decode("ascii")
+        return f"data:{content_type};base64,{encoded_image}"
+      payload = response.json()
+      result = payload.get("result") if isinstance(payload, dict) else None
+      if not isinstance(result, dict):
+        result = payload
+      encoded_image = (
+          result.get("image") or result.get("output")
+          if isinstance(result, dict)
+          else None
+      )
+      if not isinstance(encoded_image, str) or not encoded_image:
+        raise ValueError("Cloudflare yanıtında geçerli görsel verisi bulunamadı.")
+      if encoded_image.startswith("data:image/"):
+        match = re.fullmatch(
+            r"data:(image/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]*={0,2})",
+            encoded_image,
+            re.I,
+        )
+        if not match:
+          raise ValueError("Cloudflare geçersiz görsel verisi döndürdü.")
+        mime_type, encoded_image = match.group(1).lower(), match.group(2)
+      else:
+        mime_type = "image/png"
+      image_bytes = base64.b64decode(encoded_image, validate=True)
+      if not image_bytes:
+        raise ValueError("Cloudflare boş görsel dosyası döndürdü.")
+      return f"data:{mime_type};base64,{encoded_image}"
+
+    payload = {"prompt": prompt, "num_steps": 4}
     response = requests.post(
         endpoint,
         headers={
