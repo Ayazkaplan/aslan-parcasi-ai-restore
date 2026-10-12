@@ -961,7 +961,10 @@ class ImageGenerationTests(TestCase):
             "CLOUDFLARE_ACCOUNT_ID": "account-id",
             "CLOUDFLARE_API_TOKEN": "private-token",
         }), patch("dashboard.views.requests.post", return_value=response) as post:
-            views.generate_image_with_cloudflare("Kedinin rengini siyah yap", original)
+            views.generate_image_with_cloudflare(
+                "Kedinin tüy rengini siyah yap; kediyi, oturuşunu ve sade arka planı aynı bırak",
+                original,
+            )
 
         request_data = post.call_args.kwargs["json"]
         self.assertIn(
@@ -969,10 +972,10 @@ class ImageGenerationTests(TestCase):
             post.call_args.args[0],
         )
         self.assertEqual(request_data["image_b64"], "c291cmNl")
-        self.assertEqual(request_data["strength"], 0.4)
+        self.assertEqual(request_data["strength"], 0.55)
         self.assertEqual(request_data["num_steps"], 8)
-        self.assertIn("Kedinin rengini siyah yap", request_data["prompt"])
-        self.assertIn("exact subject and species", request_data["prompt"])
+        self.assertIn("Change only the existing cat's fur color to black", request_data["prompt"])
+        self.assertIn("exact same subject, species, identity, face, pose", request_data["prompt"])
 
     def test_meaningless_image_prompt_returns_actionable_error(self):
         with patch("dashboard.views.generate_image_with_cloudflare") as generate:

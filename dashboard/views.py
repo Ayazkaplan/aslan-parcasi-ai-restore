@@ -2784,6 +2784,34 @@ def parse_image_data_url(image_url):
   return {"mime_type": match.group(1).lower(), "data": encoded}
 
 
+def _cloudflare_image_edit_instruction(prompt):
+  text = (prompt or "").strip()
+  subject = None
+  for pattern, name in (
+      (r"\b(?:kedi\w*|cat)\b", "cat"),
+      (r"\b(?:köpek\w*|dog)\b", "dog"),
+  ):
+    if re.search(pattern, text, re.IGNORECASE):
+      subject = name
+      break
+
+  color_matches = []
+  for source, target in _TURKISH_PROMPT_MAP.items():
+    if target not in {"black", "white", "red", "blue", "green", "yellow"}:
+      continue
+    match = re.search(rf"\b{re.escape(source)}\w*\b", text, re.IGNORECASE)
+    if match:
+      color_matches.append((match.start(), target))
+  for color in {"black", "white", "red", "blue", "green", "yellow"}:
+    match = re.search(rf"\b{color}\b", text, re.IGNORECASE)
+    if match:
+      color_matches.append((match.start(), color))
+  color = min(color_matches, default=(0, None))[1]
+  if subject and color:
+    return f"Change only the existing {subject}'s fur color to {color}."
+  return text
+
+
 def generate_image_with_cloudflare(prompt, source_image=None):
   """Generate with SDXL-Lightning or edit with Cloudflare's DreamShaper img2img model."""
   account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
@@ -2805,17 +2833,19 @@ def generate_image_with_cloudflare(prompt, source_image=None):
     request_prompt = prompt
     payload = {"prompt": request_prompt, "num_steps": 4}
     if source_image:
+      requested_change = _cloudflare_image_edit_instruction(prompt)
       request_prompt = (
-          "Edit the supplied image. Make only the requested change. Preserve the "
-          "exact subject and species, pose, composition, background, lighting, and "
-          "all other details. Do not replace or reinterpret the subject. "
-          "Requested change: " + prompt
+          "Edit the supplied image. Apply only this change: "
+          + requested_change
+          + " Keep the exact same subject, species, identity, face, pose, size, "
+          "composition, background, and lighting. Do not replace or reinterpret "
+          "the subject. Leave every other detail unchanged."
       )
       payload.update({
           "prompt": request_prompt,
           "image_b64": source_image["data"],
           "num_steps": 8,
-          "strength": 0.4,
+          "strength": 0.55,
       })
     response = requests.post(
         endpoint,
