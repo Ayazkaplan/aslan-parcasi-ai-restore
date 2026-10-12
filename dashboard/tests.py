@@ -965,7 +965,7 @@ class ImageGenerationTests(TestCase):
 
         request_data = post.call_args.kwargs["json"]
         self.assertIn(
-            "/@cf/stabilityai/stable-diffusion-xl-base-1.0",
+            "/@cf/runwayml/stable-diffusion-v1-5-img2img",
             post.call_args.args[0],
         )
         self.assertEqual(request_data["image_b64"], "c291cmNl")

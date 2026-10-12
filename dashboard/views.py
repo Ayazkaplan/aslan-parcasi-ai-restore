@@ -113,6 +113,7 @@ PROVIDER_SPECS = (
 _image_request_lock = threading.Lock()
 _last_image_request_at = {}
 IMAGE_DAILY_LIMIT = 15
+CLOUDFLARE_IMAGE_EDIT_MODEL = "@cf/runwayml/stable-diffusion-v1-5-img2img"
 
 logger = logging.getLogger(__name__)
 
@@ -2784,7 +2785,7 @@ def parse_image_data_url(image_url):
 
 
 def generate_image_with_cloudflare(prompt, source_image=None):
-  """Generate with SDXL-Lightning or edit with SDXL Base img2img."""
+  """Generate with SDXL-Lightning or edit with Cloudflare's dedicated img2img model."""
   account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
   api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
   if not account_id or not api_token:
@@ -2792,7 +2793,7 @@ def generate_image_with_cloudflare(prompt, source_image=None):
         "Görsel üretimi henüz yapılandırılmadı. Cloudflare hesap bilgileri sunucuda eksik."
     )
   model = (
-      "@cf/stabilityai/stable-diffusion-xl-base-1.0"
+      CLOUDFLARE_IMAGE_EDIT_MODEL
       if source_image
       else "@cf/bytedance/stable-diffusion-xl-lightning"
   )
@@ -3793,6 +3794,7 @@ def api_debug(request):
           "normal": GEMINI_MODEL,
           "fast": GEMINI_FAST_MODEL,
           "image": "@cf/bytedance/stable-diffusion-xl-lightning",
+          "image_edit": CLOUDFLARE_IMAGE_EDIT_MODEL,
       },
       "chat_priority": [
           f"{endpoint.provider}:{endpoint.models[0]}"
