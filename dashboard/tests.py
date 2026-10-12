@@ -965,7 +965,7 @@ class ImageGenerationTests(TestCase):
 
         request_data = post.call_args.kwargs["json"]
         self.assertIn(
-            "/@cf/bytedance/stable-diffusion-xl-lightning",
+            "/@cf/lykon/dreamshaper-8-lcm",
             post.call_args.args[0],
         )
         self.assertEqual(request_data["image_b64"], "c291cmNl")

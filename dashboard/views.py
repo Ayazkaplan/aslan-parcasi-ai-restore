@@ -113,7 +113,7 @@ PROVIDER_SPECS = (
 _image_request_lock = threading.Lock()
 _last_image_request_at = {}
 IMAGE_DAILY_LIMIT = 15
-CLOUDFLARE_IMAGE_EDIT_MODEL = "@cf/bytedance/stable-diffusion-xl-lightning"
+CLOUDFLARE_IMAGE_EDIT_MODEL = "@cf/lykon/dreamshaper-8-lcm"
 
 logger = logging.getLogger(__name__)
 
@@ -2785,7 +2785,7 @@ def parse_image_data_url(image_url):
 
 
 def generate_image_with_cloudflare(prompt, source_image=None):
-  """Generate with SDXL-Lightning or edit with Cloudflare's dedicated img2img model."""
+  """Generate with SDXL-Lightning or edit with Cloudflare's DreamShaper img2img model."""
   account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
   api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
   if not account_id or not api_token:
