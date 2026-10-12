@@ -932,7 +932,7 @@ class ImageGenerationTests(TestCase):
         prompt = "Sadece arka planı açık mavi yap; nesneye dokunma."
         encoded = "cG5nLWJ5dGVz"
         with patch(
-            "dashboard.views.generate_image_edit_with_gemini",
+            "dashboard.views.generate_image_with_cloudflare",
             return_value="data:image/png;base64,bmV3",
         ) as edit:
             response = self.client.post(
@@ -950,40 +950,34 @@ class ImageGenerationTests(TestCase):
             {"mime_type": "image/png", "data": encoded},
         )
 
-    def test_gemini_edits_source_image_using_a_clear_english_instruction(self):
+    def test_cloudflare_edits_source_image_using_a_clear_english_instruction(self):
         response = Mock()
         response.status_code = 200
-        response.json.return_value = {
-            "output_image": {
-                "data": "ZWRpdGVkLXBuZw==",
-                "mime_type": "image/png",
-            },
-        }
+        response.headers = {"Content-Type": "image/png"}
+        response.content = b"edited-png"
         original = {"mime_type": "image/png", "data": "c291cmNl"}
         with patch.dict(os.environ, {
-            "GEMINI_API_KEY": "test-key",
+            "CLOUDFLARE_ACCOUNT_ID": "account-id",
+            "CLOUDFLARE_API_TOKEN": "private-token",
         }), patch("dashboard.views.requests.post", return_value=response) as post:
-            image_url = views.generate_image_edit_with_gemini(
+            image_url = views.generate_image_with_cloudflare(
                 "Kedinin tüy rengini siyah yap; kediyi, oturuşunu ve sade arka planı aynı bırak",
                 original,
             )
 
         self.assertEqual(image_url, "data:image/png;base64,ZWRpdGVkLXBuZw==")
-        self.assertEqual(
-            post.call_args.args[0],
-            "https://generativelanguage.googleapis.com/v1beta/interactions",
-        )
-        self.assertEqual(post.call_args.kwargs["headers"]["x-goog-api-key"], "test-key")
         request_data = post.call_args.kwargs["json"]
-        self.assertEqual(request_data["model"], views.GEMINI_IMAGE_EDIT_MODEL)
-        self.assertEqual(request_data["input"][1]["data"], "c291cmNl")
+        self.assertIn("/@cf/lykon/dreamshaper-8-lcm", post.call_args.args[0])
+        self.assertEqual(request_data["image_b64"], "c291cmNl")
+        self.assertEqual(request_data["strength"], 0.55)
+        self.assertEqual(request_data["num_steps"], 8)
         self.assertIn(
             "Change only the existing cat's fur color to black",
-            request_data["input"][0]["text"],
+            request_data["prompt"],
         )
         self.assertIn(
             "exact same subject, species, identity, face, pose",
-            request_data["input"][0]["text"],
+            request_data["prompt"],
         )
 
     def test_meaningless_image_prompt_returns_actionable_error(self):
@@ -998,10 +992,10 @@ class ImageGenerationTests(TestCase):
         self.assertIn("anlaşılır görünmüyor", response.json()["error"])
         generate.assert_not_called()
 
-    def test_image_api_reports_gemini_edit_failure_without_spending_quota(self):
+    def test_image_api_reports_cloudflare_edit_failure_without_spending_quota(self):
         with patch(
-            "dashboard.views.generate_image_edit_with_gemini",
-            side_effect=views.ImageUnavailableError("Gemini edit unavailable"),
+            "dashboard.views.generate_image_with_cloudflare",
+            side_effect=views.ImageUnavailableError("Cloudflare edit unavailable"),
         ):
             response = self.client.post(
                 reverse("api_image_generate"),
@@ -1013,7 +1007,7 @@ class ImageGenerationTests(TestCase):
             )
 
         self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["error"], "Gemini edit unavailable")
+        self.assertEqual(response.json()["error"], "Cloudflare edit unavailable")
         usage = ImageDailyUsage.objects.get(user=self.user)
         self.assertEqual(usage.successful_count, 0)
         self.assertEqual(usage.pending_count, 0)
