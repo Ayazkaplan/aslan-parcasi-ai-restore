@@ -2815,7 +2815,7 @@ def generate_image_with_cloudflare(prompt, source_image=None):
           "prompt": request_prompt,
           "image_b64": source_image["data"],
           "num_steps": 8,
-          "strength": 0.25,
+          "strength": 0.4,
       })
     response = requests.post(
         endpoint,

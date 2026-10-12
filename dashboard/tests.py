@@ -969,7 +969,7 @@ class ImageGenerationTests(TestCase):
             post.call_args.args[0],
         )
         self.assertEqual(request_data["image_b64"], "c291cmNl")
-        self.assertEqual(request_data["strength"], 0.25)
+        self.assertEqual(request_data["strength"], 0.4)
         self.assertEqual(request_data["num_steps"], 8)
         self.assertIn("Kedinin rengini siyah yap", request_data["prompt"])
         self.assertIn("exact subject and species", request_data["prompt"])
