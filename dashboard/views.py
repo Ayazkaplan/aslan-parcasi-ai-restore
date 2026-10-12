@@ -113,7 +113,7 @@ PROVIDER_SPECS = (
 _image_request_lock = threading.Lock()
 _last_image_request_at = {}
 IMAGE_DAILY_LIMIT = 15
-CLOUDFLARE_IMAGE_EDIT_MODEL = "@cf/runwayml/stable-diffusion-v1-5-img2img"
+CLOUDFLARE_IMAGE_EDIT_MODEL = "@cf/bytedance/stable-diffusion-xl-lightning"
 
 logger = logging.getLogger(__name__)
 
