@@ -892,8 +892,7 @@ class ImageGenerationTests(TestCase):
         ) as logs:
             with self.assertRaises(views.ImageUnavailableError):
                 views.generate_image_with_cloudflare(
-                    "Make the cat black",
-                    {"mime_type": "image/png", "data": "c291cmNl"},
+                    "A red mousepad",
                 )
 
         self.assertTrue(any("Invalid image input" in message for message in logs.output))
@@ -933,7 +932,7 @@ class ImageGenerationTests(TestCase):
         prompt = "Sadece arka planı açık mavi yap; nesneye dokunma."
         encoded = "cG5nLWJ5dGVz"
         with patch(
-            "dashboard.views.generate_image_with_cloudflare",
+            "dashboard.views.generate_image_edit_with_gemini",
             return_value="data:image/png;base64,bmV3",
         ) as edit:
             response = self.client.post(
@@ -951,31 +950,41 @@ class ImageGenerationTests(TestCase):
             {"mime_type": "image/png", "data": encoded},
         )
 
-    def test_cloudflare_edits_source_image_without_using_gemini(self):
+    def test_gemini_edits_source_image_using_a_clear_english_instruction(self):
         response = Mock()
         response.status_code = 200
-        response.headers = {"Content-Type": "image/png"}
-        response.content = b"edited-png"
+        response.json.return_value = {
+            "output_image": {
+                "data": "ZWRpdGVkLXBuZw==",
+                "mime_type": "image/png",
+            },
+        }
         original = {"mime_type": "image/png", "data": "c291cmNl"}
         with patch.dict(os.environ, {
-            "CLOUDFLARE_ACCOUNT_ID": "account-id",
-            "CLOUDFLARE_API_TOKEN": "private-token",
+            "GEMINI_API_KEY": "test-key",
         }), patch("dashboard.views.requests.post", return_value=response) as post:
-            views.generate_image_with_cloudflare(
+            image_url = views.generate_image_edit_with_gemini(
                 "Kedinin tüy rengini siyah yap; kediyi, oturuşunu ve sade arka planı aynı bırak",
                 original,
             )
 
-        request_data = post.call_args.kwargs["json"]
-        self.assertIn(
-            "/@cf/lykon/dreamshaper-8-lcm",
+        self.assertEqual(image_url, "data:image/png;base64,ZWRpdGVkLXBuZw==")
+        self.assertEqual(
             post.call_args.args[0],
+            "https://generativelanguage.googleapis.com/v1beta/interactions",
         )
-        self.assertEqual(request_data["image_b64"], "c291cmNl")
-        self.assertEqual(request_data["strength"], 0.55)
-        self.assertEqual(request_data["num_steps"], 8)
-        self.assertIn("Change only the existing cat's fur color to black", request_data["prompt"])
-        self.assertIn("exact same subject, species, identity, face, pose", request_data["prompt"])
+        self.assertEqual(post.call_args.kwargs["headers"]["x-goog-api-key"], "test-key")
+        request_data = post.call_args.kwargs["json"]
+        self.assertEqual(request_data["model"], views.GEMINI_IMAGE_EDIT_MODEL)
+        self.assertEqual(request_data["input"][1]["data"], "c291cmNl")
+        self.assertIn(
+            "Change only the existing cat's fur color to black",
+            request_data["input"][0]["text"],
+        )
+        self.assertIn(
+            "exact same subject, species, identity, face, pose",
+            request_data["input"][0]["text"],
+        )
 
     def test_meaningless_image_prompt_returns_actionable_error(self):
         with patch("dashboard.views.generate_image_with_cloudflare") as generate:
@@ -989,10 +998,10 @@ class ImageGenerationTests(TestCase):
         self.assertIn("anlaşılır görünmüyor", response.json()["error"])
         generate.assert_not_called()
 
-    def test_image_api_reports_cloudflare_edit_failure_without_spending_quota(self):
+    def test_image_api_reports_gemini_edit_failure_without_spending_quota(self):
         with patch(
-            "dashboard.views.generate_image_with_cloudflare",
-            side_effect=views.ImageUnavailableError("Cloudflare edit unavailable"),
+            "dashboard.views.generate_image_edit_with_gemini",
+            side_effect=views.ImageUnavailableError("Gemini edit unavailable"),
         ):
             response = self.client.post(
                 reverse("api_image_generate"),
@@ -1004,7 +1013,7 @@ class ImageGenerationTests(TestCase):
             )
 
         self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["error"], "Cloudflare edit unavailable")
+        self.assertEqual(response.json()["error"], "Gemini edit unavailable")
         usage = ImageDailyUsage.objects.get(user=self.user)
         self.assertEqual(usage.successful_count, 0)
         self.assertEqual(usage.pending_count, 0)

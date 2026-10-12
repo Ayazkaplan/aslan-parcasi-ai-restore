@@ -47,6 +47,7 @@ MAX_EXTRACTED_TEXT = 24_000
 IMAGE_REQUEST_MIN_INTERVAL = 8
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_FAST_MODEL = "gemini-2.5-flash-lite"
+GEMINI_IMAGE_EDIT_MODEL = "gemini-nano-banana-2.1"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 REASONING_MARKER = "\x00R\x00"
 
@@ -113,7 +114,6 @@ PROVIDER_SPECS = (
 _image_request_lock = threading.Lock()
 _last_image_request_at = {}
 IMAGE_DAILY_LIMIT = 15
-CLOUDFLARE_IMAGE_EDIT_MODEL = "@cf/lykon/dreamshaper-8-lcm"
 
 logger = logging.getLogger(__name__)
 
@@ -2784,7 +2784,7 @@ def parse_image_data_url(image_url):
   return {"mime_type": match.group(1).lower(), "data": encoded}
 
 
-def _cloudflare_image_edit_instruction(prompt):
+def _image_edit_instruction(prompt):
   text = (prompt or "").strip()
   subject = None
   for pattern, name in (
@@ -2812,48 +2812,27 @@ def _cloudflare_image_edit_instruction(prompt):
   return text
 
 
-def generate_image_with_cloudflare(prompt, source_image=None):
-  """Generate with SDXL-Lightning or edit with Cloudflare's DreamShaper img2img model."""
+def generate_image_with_cloudflare(prompt):
+  """Generate an image with Cloudflare's SDXL-Lightning model."""
   account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
   api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
   if not account_id or not api_token:
     raise ImageUnavailableError(
         "Görsel üretimi henüz yapılandırılmadı. Cloudflare hesap bilgileri sunucuda eksik."
     )
-  model = (
-      CLOUDFLARE_IMAGE_EDIT_MODEL
-      if source_image
-      else "@cf/bytedance/stable-diffusion-xl-lightning"
-  )
+  model = "@cf/bytedance/stable-diffusion-xl-lightning"
   endpoint = (
       "https://api.cloudflare.com/client/v4/accounts/"
       f"{quote(account_id, safe='')}/ai/run/{model}"
   )
   try:
-    request_prompt = prompt
-    payload = {"prompt": request_prompt, "num_steps": 4}
-    if source_image:
-      requested_change = _cloudflare_image_edit_instruction(prompt)
-      request_prompt = (
-          "Edit the supplied image. Apply only this change: "
-          + requested_change
-          + " Keep the exact same subject, species, identity, face, pose, size, "
-          "composition, background, and lighting. Do not replace or reinterpret "
-          "the subject. Leave every other detail unchanged."
-      )
-      payload.update({
-          "prompt": request_prompt,
-          "image_b64": source_image["data"],
-          "num_steps": 8,
-          "strength": 0.55,
-      })
     response = requests.post(
         endpoint,
         headers={
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json",
         },
-        json=payload,
+        json={"prompt": prompt, "num_steps": 4},
         timeout=90,
     )
     if response.status_code >= 400:
@@ -2889,8 +2868,120 @@ def generate_image_with_cloudflare(prompt, source_image=None):
   except Exception as error:
     logger.warning("Cloudflare image model %s failed: %s", model, error)
     raise ImageUnavailableError(
-        "Cloudflare görsel servisi şu anda görsel üretemedi. Biraz sonra tekrar dene."
+        "Görsel servisi şu anda görsel üretemedi. Biraz sonra tekrar dene."
     ) from error
+
+
+def generate_image_edit_with_gemini(prompt, source_image):
+  """Edit a supplied image using Gemini's native image-generation model."""
+  keys = ordered_keys(get_api_keys())
+  if not keys:
+    raise ImageUnavailableError("Görsel düzenleme için Gemini API anahtarı yapılandırılmadı.")
+
+  request_prompt = (
+      "Edit the supplied image. Apply only this requested change: "
+      + _image_edit_instruction(prompt)
+      + " Preserve the exact same subject, species, identity, face, pose, size, "
+      "composition, background, and lighting. Do not replace or reinterpret "
+      "the subject. Leave every other detail unchanged. Return the edited image."
+  )
+  last_error = None
+  for key in keys:
+    if not key_is_available(key):
+      continue
+    try:
+      response = requests.post(
+          "https://generativelanguage.googleapis.com/v1beta/interactions",
+          headers={
+              "x-goog-api-key": key,
+              "Content-Type": "application/json",
+          },
+          json={
+              "model": GEMINI_IMAGE_EDIT_MODEL,
+              "input": [
+                  {"type": "text", "text": request_prompt},
+                  {
+                      "type": "image",
+                      "mime_type": source_image["mime_type"],
+                      "data": source_image["data"],
+                  },
+              ],
+          },
+          timeout=120,
+      )
+      if response.status_code >= 400:
+        try:
+          error_payload = response.json()
+        except ValueError:
+          error_payload = {}
+        detail = (
+            error_payload.get("error", {}).get("message", "")
+            if isinstance(error_payload, dict)
+            else ""
+        ) or (getattr(response, "text", "") or "")[:500]
+        error = UpstreamHTTPError(response.status_code, detail)
+        last_error = error
+        logger.warning(
+            "Gemini image-edit model %s returned HTTP %s: %s",
+            GEMINI_IMAGE_EDIT_MODEL,
+            response.status_code,
+            detail,
+        )
+        if response.status_code in (401, 403):
+          mark_key_invalid(key, error)
+          continue
+        if response.status_code == 429:
+          mark_key_rate(key, error, _retry_after(response))
+          continue
+        raise ImageUnavailableError(
+            "Gemini görsel düzenleme servisi şu anda kullanılamıyor."
+        ) from error
+
+      payload = response.json()
+      image_result = payload.get("output_image")
+      if not isinstance(image_result, dict):
+        output_items = payload.get("output")
+        image_result = next(
+            (
+                item
+                for item in (output_items if isinstance(output_items, list) else [])
+                if isinstance(item, dict) and item.get("type") == "image"
+            ),
+            None,
+        )
+      image_data = image_result.get("data") if isinstance(image_result, dict) else None
+      mime_type = (
+          image_result.get("mime_type", "image/png")
+          if isinstance(image_result, dict)
+          else "image/png"
+      )
+      if mime_type not in {"image/png", "image/jpeg", "image/webp"} or not image_data:
+        raise ImageUnavailableError(
+            "Gemini görsel düzenleme servisi geçerli bir görsel döndürmedi."
+        )
+      try:
+        decoded_image = base64.b64decode(image_data, validate=True)
+      except (TypeError, ValueError, base64.binascii.Error) as error:
+        raise ImageUnavailableError(
+            "Gemini görsel düzenleme servisi geçerli bir görsel döndürmedi."
+        ) from error
+      if not decoded_image:
+        raise ImageUnavailableError(
+            "Gemini görsel düzenleme servisi boş bir görsel döndürdü."
+        )
+      mark_key_ok(key)
+      return f"data:{mime_type};base64,{image_data}"
+    except ImageUnavailableError:
+      raise
+    except Exception as error:
+      last_error = error
+      logger.warning("Gemini image-edit model %s failed: %s", GEMINI_IMAGE_EDIT_MODEL, error)
+
+  if last_error:
+    raise ImageUnavailableError(
+        "Gemini görsel düzenleme servisi şu anda görsel üretemedi."
+    ) from last_error
+  raise ImageUnavailableError("Gemini görsel düzenleme servisi şu anda kullanılamıyor.")
 
 
 def transcribe_audio(encoded, mime_type, api_keys=None):
@@ -3825,7 +3916,7 @@ def api_debug(request):
           "normal": GEMINI_MODEL,
           "fast": GEMINI_FAST_MODEL,
           "image": "@cf/bytedance/stable-diffusion-xl-lightning",
-          "image_edit": CLOUDFLARE_IMAGE_EDIT_MODEL,
+          "image_edit": GEMINI_IMAGE_EDIT_MODEL,
       },
       "chat_priority": [
           f"{endpoint.provider}:{endpoint.models[0]}"
@@ -3909,7 +4000,7 @@ def api_image_generate(request):
     image_succeeded = False
     try:
       if source_image:
-        image_url = generate_image_with_cloudflare(prompt, source_image)
+        image_url = generate_image_edit_with_gemini(prompt, source_image)
       else:
         image_url = generate_image_with_cloudflare(prompt)
       image_succeeded = True
