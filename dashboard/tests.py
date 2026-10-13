@@ -945,9 +945,9 @@ class ImageGenerationTests(TestCase):
         prompt = views._image_edit_instruction(user_prompt)
 
         self.assertTrue(views._requests_pose_change(user_prompt))
-        self.assertIn("Change the existing cat's pose exactly as requested", prompt)
-        self.assertIn("do not preserve the original pose", prompt)
-        self.assertIn("distinctive fur colors and coat markings", prompt)
+        self.assertIn("Change the existing cat's pose as requested", prompt)
+        self.assertIn("Keep it recognizably the same animal", prompt)
+        self.assertLess(len(prompt), 200)
         self.assertIn(user_prompt, prompt)
 
     def test_masked_pose_edit_does_not_add_an_instruction_to_preserve_the_pose(self):
@@ -972,10 +972,8 @@ class ImageGenerationTests(TestCase):
             )
 
         prompt = generate.call_args.args[0]
-        self.assertIn("The user explicitly requests a pose change", prompt)
-        self.assertIn("change the pose as requested", prompt)
-        self.assertIn("same individual", prompt)
-        self.assertIn("distinctive fur colors and coat markings", prompt)
+        self.assertIn("Change the pose as requested", prompt)
+        self.assertIn("recognizably the same cat", prompt)
         self.assertNotIn("Preserve the identity, shape, pose", prompt)
 
     def test_cloudflare_requires_server_side_credentials(self):
@@ -1178,10 +1176,9 @@ class ImageGenerationTests(TestCase):
             )
 
         payload = post.call_args.kwargs["json"]
-        self.assertIn("pose as requested instead of preserving its original pose", payload["prompt"])
-        self.assertIn("distinctive fur colors and coat markings", payload["prompt"])
-        self.assertIn("changed coat pattern", payload["negative_prompt"])
-        self.assertIn("changed fur color", payload["negative_prompt"])
+        self.assertIn("subject's pose as requested", payload["prompt"])
+        self.assertIn("recognizably the same animal", payload["prompt"])
+        self.assertNotIn("changed coat pattern", payload["negative_prompt"])
 
     def test_cloudflare_inpainting_503_falls_back_to_sdxl_lightning(self):
         source = views.Image.new("RGB", (8, 4), "orange")

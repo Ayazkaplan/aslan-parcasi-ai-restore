@@ -2924,11 +2924,8 @@ def generate_masked_image_edit(prompt, source_image, selection_mask):
       + ". The supplied image is a crop around the area selected by the user. "
       "Apply the requested change naturally and realistically. "
       + (
-          "The user explicitly requests a pose change, so change the pose as requested "
-          "instead of preserving the original pose. Keep the same individual, species, "
-          "face, eye color, distinctive fur colors and coat markings, body proportions, "
-          "perspective, lighting, and all unrequested details unchanged. Do not recolor "
-          "or redesign the subject. "
+          "Change the pose as requested; keep it recognizably the same cat and infer "
+          "a natural way to make the change. Leave unrequested details unchanged. "
           if pose_change_requested
           else "Preserve the identity, shape, pose, perspective, lighting, and all "
           "surrounding details that the request does not ask to change. "
@@ -2988,13 +2985,9 @@ def _image_edit_instruction(prompt):
     subject_description = f"the {subject}" if subject else "the existing foreground subject"
     if pose_change_requested:
       return (
-          f"Change only the background and re-pose {subject_description} as requested. "
-          "The pose is intentionally changing, but preserve the same individual, "
-          "species, face, eye color, distinctive fur colors and coat markings, body "
-          "proportions, and all other requested-independent foreground details. "
-          "Do not recolor or redesign the subject. Blend the requested background "
-          "naturally at its edge. "
-          f"Requested change: {text}"
+          f"Change the background and pose of {subject_description} as requested. "
+          "Keep it recognizably the same animal and make the changes look natural. "
+          f"Request: {text}"
       )
     return (
         f"Change only the background to match the requested scene. Preserve "
@@ -3026,12 +3019,8 @@ def _image_edit_instruction(prompt):
   if pose_change_requested:
     subject_description = f"the existing {subject}" if subject else "the existing subject"
     return (
-          f"Change {subject_description}'s pose exactly as requested. The pose is "
-          "intentionally changing, so do not preserve the original pose. Preserve the "
-          "same individual and species, recognizable face, eye color, distinctive fur "
-          "colors and coat markings, body proportions, camera perspective, lighting, "
-          "and background. Do not recolor or redesign the subject. Keep the new pose "
-          f"anatomically natural. Requested pose: {text}"
+        f"Change {subject_description}'s pose as requested. Keep it recognizably the "
+        f"same animal and make the change look natural. Request: {text}"
     )
 
   color_matches = []
@@ -3144,10 +3133,8 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
                   else (
                       " The user explicitly requests a pose change, so change the "
                       "subject's pose as requested instead of preserving its original "
-                      "pose. Preserve the same individual, species, recognizable face, "
-                      "eye color, distinctive fur colors and coat markings, body "
-                      "proportions, background, lighting, and all unselected pixels. "
-                      "Do not recolor or redesign the subject."
+                      "pose. Keep it recognizably the same animal and leave unrequested "
+                      "details unchanged."
                       if pose_change_requested
                       else " Keep the same subject, species, identity, face, pose, size, "
                       "composition, background, and lighting. Do not replace or reinterpret "
@@ -3184,12 +3171,6 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
             "negative_prompt": (
                 "changed foreground subject, damaged silhouette, extra limbs, "
                 "duplicate tail, mirrored anatomy, hard cutout edge"
-                + (
-                    ", different animal, different breed, changed fur color, "
-                    "changed coat pattern, missing distinctive markings, changed eye color"
-                    if pose_change_requested
-                    else ""
-                )
             ),
             "image_b64": base64.b64encode(image_buffer.getvalue()).decode("ascii"),
             "mask": list(mask_buffer.getvalue()),
