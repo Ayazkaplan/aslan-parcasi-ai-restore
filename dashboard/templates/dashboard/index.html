@@ -1695,21 +1695,19 @@
 
             <div class="image-brush-editor" id="imageBrushEditor" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="imageBrushTitle">
                 <div class="image-brush-card">
-                    <h3 id="imageBrushTitle">Değişecek alanı fırçayla boya</h3>
+                    <h3 id="imageBrushTitle">Düzenlenecek alanı fırçayla seç</h3>
                     <div class="image-brush-stage" id="imageBrushStage">
                         <canvas id="imageBrushSource"></canvas>
                         <canvas id="imageBrushMask"></canvas>
                     </div>
                     <div class="image-brush-controls">
-                        <label for="imageBrushColor">Yeni renk</label>
-                        <input type="color" id="imageBrushColor" value="#000000" aria-label="Yeni renk">
                         <label for="imageBrushSize">Fırça</label>
                         <input type="range" id="imageBrushSize" min="8" max="160" value="48">
                         <button type="button" class="image-edit-cancel-btn" onclick="clearImageBrush()">Seçimi temizle</button>
                     </div>
                     <div class="image-brush-actions">
-                        <button type="button" class="image-edit-cancel-btn" onclick="closeImageBrushEditor()">İptal</button>
-                        <button type="button" class="modal-btn save" id="applyImageBrush" onclick="continueEditingImage()">Uygula</button>
+                        <button type="button" class="image-edit-cancel-btn" onclick="cancelImageEdit()">İptal</button>
+                        <button type="button" class="modal-btn save" id="applyImageBrush" onclick="saveImageBrushSelection()">Uygula</button>
                     </div>
                 </div>
             </div>
@@ -2984,18 +2982,23 @@
         const generateButton = document.getElementById('imageGenBtn');
         const sendButton = document.getElementById('sendBtn');
         const editing = !!pendingImageEdit;
+        const selectionReady = !!(pendingImageEdit && pendingImageEdit.selectionMask);
 
         if (mode) mode.style.display = editing ? 'flex' : 'none';
         if (label) {
             label.textContent = editing
-                ? `Düzenleme modu: ${pendingImageEdit.name || 'seçilen görsel'}`
+                ? selectionReady
+                    ? `Alan seçildi: ${pendingImageEdit.name || 'seçilen görsel'} · İsteğini yaz ve Enter'a bas`
+                    : `Düzenleme modu: ${pendingImageEdit.name || 'seçilen görsel'} · Alanı fırçayla boya`
                 : '';
         }
         if (input) {
-            input.placeholder = editing
-                ? 'Fırçayla düzenlenecek alanı seç...'
+            input.placeholder = selectionReady
+                ? 'Seçtiğin alanda ne değişsin? İsteğini yazıp Enter’a bas...'
+                : editing
+                    ? 'Önce fırçayla alanı seç ve Uygula’ya bas...'
                 : 'Bir şeyler yazın...';
-            input.disabled = editing;
+            input.disabled = editing && !selectionReady;
         }
         if (generateButton) {
             generateButton.disabled = editing;
@@ -3005,11 +3008,11 @@
                 : 'Görsel oluştur';
         }
         if (sendButton) {
-            sendButton.title = editing ? 'Görsel düzenleme isteğini gönder' : 'Gönder';
-            sendButton.disabled = editing;
+            sendButton.title = selectionReady ? 'Düzenleme isteğini gönder' : 'Gönder';
+            sendButton.disabled = editing && !selectionReady;
             sendButton.setAttribute(
                 'aria-label',
-                editing ? 'Görsel düzenleme isteğini gönder' : 'Gönder'
+                selectionReady ? 'Düzenleme isteğini gönder' : 'Gönder'
             );
         }
     }
@@ -3034,6 +3037,7 @@
             messageIndex,
             imageIndex,
             sourceImage,
+            selectionMask: null,
             name: image.name || 'seçilen görsel'
         };
         updateImageEditMode();
@@ -3115,12 +3119,8 @@
         paintingImageSelection = false;
     });
 
-    async function continueEditingImage() {
+    function saveImageBrushSelection() {
         if (!pendingImageEdit) return;
-        if (selectedImages.length || selectedFiles.length || selectedVoiceBlob) {
-            alert('Düzenleme sırasında ekli görsel, dosya veya ses kaydı bulunmamalı.');
-            return;
-        }
         const maskCanvas = document.getElementById('imageBrushMask');
         const maskData = maskCanvas.getContext('2d').getImageData(
             0, 0, maskCanvas.width, maskCanvas.height
@@ -3133,7 +3133,26 @@
             }
         }
         if (!hasSelection) {
-            alert('Önce değişmesini istediğin alanı fırçayla boya.');
+            alert('Önce düzenlenmesini istediğin alanı fırçayla seç.');
+            return;
+        }
+
+        pendingImageEdit.selectionMask = maskCanvas.toDataURL('image/png');
+        closeImageBrushEditor();
+        updateImageEditMode();
+        document.getElementById('userInput').focus();
+    }
+
+    async function continueEditingImage(prompt) {
+        if (!pendingImageEdit || !pendingImageEdit.selectionMask) return;
+        const userPrompt = String(prompt || '').trim();
+        if (!userPrompt) {
+            alert('Seçtiğin alanda neyin değişmesini istediğini yazıp Enter’a bas.');
+            document.getElementById('userInput').focus();
+            return;
+        }
+        if (selectedImages.length || selectedFiles.length || selectedVoiceBlob) {
+            alert('Düzenleme isteğinde ekli görsel, dosya veya ses kaydı bulunmamalı.');
             return;
         }
 
@@ -3148,16 +3167,17 @@
         const startStamp = Date.now();
         currentChat.messages.push({
             sender: 'user',
-            text: 'Fırçayla seçilen alanın rengini değiştirmek istiyorum.',
+            text: userPrompt,
             timestamp: startStamp
         });
         currentChat.messages.push({
             sender: 'ai',
-            text: 'Yalnızca fırçayla seçtiğin alan düzenleniyor…',
+            text: 'İsteğini fırçayla seçtiğin alana uyguluyorum…',
             loadingImage: true,
             timestamp: startStamp + 1
         });
         const placeholderIndex = currentChat.messages.length - 1;
+        document.getElementById('userInput').value = '';
         saveToStorage();
         renderChatList();
         renderMessages();
@@ -3185,10 +3205,9 @@
                 },
                 credentials: 'same-origin',
                 body: JSON.stringify({
-                    prompt: 'Fırçayla seçilen alanın rengini değiştir.',
+                    prompt: userPrompt,
                     source_image: editing.sourceImage,
-                    selection_mask: maskCanvas.toDataURL('image/png'),
-                    target_color: document.getElementById('imageBrushColor').value
+                    selection_mask: editing.selectionMask
                 }),
                 signal: imageRequestController.signal
             });
@@ -3397,7 +3416,8 @@
         const text = customText !== null ? customText : inputEl.value.trim();
 
         if (pendingImageEdit) {
-            return;
+            if (!pendingImageEdit.selectionMask) return;
+            return continueEditingImage(text);
         }
 
         // Stopping and sending in the same interaction must wait for MediaRecorder.onstop.

@@ -423,6 +423,13 @@ def enhance_image_prompt(prompt):
         f"Exact user brief: {topic}"
     )
 
+  explicit_close_up = re.search(
+      r"\b(close[- ]?up|extreme close[- ]?up|headshot|macro|"
+      r"yakın\s*çekim\w*|yakın\s+plan\w*|makro\w*|sadece\s+yüz\w*)\b",
+      raw + " " + english,
+      re.IGNORECASE,
+  )
+
   if re.search(r"\b(mouse\s*pad|mouse\s*mat|mousepad|fare\s+altl[ıi]ğ[ıi])\b", raw, re.I):
     return (
         "Ultra-photorealistic native 4K UHD studio product photo. Main subject: exactly "
@@ -467,9 +474,20 @@ def enhance_image_prompt(prompt):
       "carefully art-directed and fully finished, with a clear focal subject, "
       "intentional balanced framing, refined realistic textures, coherent lighting "
       "and background, and complete fine details; avoid rushed, unfinished, blurry, "
-      "or low-detail results"
+      "or low-detail results. Make it look like a real photograph captured on a "
+      "full-frame camera with a natural 50mm lens, true-to-life colors, believable "
+      "optical depth of field, finely resolved real-world textures, subtle natural "
+      "imperfections, and physically plausible light and shadows; avoid CGI, 3D-rendered, "
+      "plastic-looking, or artificial details"
   )
-  return f"{topic}, {detail_prefix}, {finishing_direction}".strip(", ")
+  framing_direction = ""
+  if not explicit_close_up:
+    framing_direction = (
+        "Use a medium or full shot by default: pull the camera back enough to show "
+        "the complete main subject clearly inside the frame, with natural space around "
+        "it and relevant scene context; do not crop to only the head or face"
+    )
+  return f"{topic}, {detail_prefix}, {framing_direction}, {finishing_direction}".strip(", ")
 
 
 def build_flux_image_params(prompt, seed=None, width=1024, height=1024):
@@ -2681,7 +2699,7 @@ class LiveAnswerLinkSanitizer:
 
 
 def image_usage_today(user_id):
-  """How many successful images this user generated today."""
+  """How many successful image operations this user completed today."""
   return ImageDailyUsage.objects.filter(
       user_id=user_id,
       usage_date=timezone.localdate(),
@@ -2689,7 +2707,7 @@ def image_usage_today(user_id):
 
 
 def reserve_image_usage(user_id):
-  """Atomically reserve one of this user's remaining daily image generations."""
+  """Atomically reserve one of this user's remaining daily image operations."""
   today = timezone.localdate()
   ImageDailyUsage.objects.get_or_create(user_id=user_id, usage_date=today)
   reserved = (
@@ -2786,12 +2804,8 @@ def parse_image_data_url(image_url):
   return {"mime_type": match.group(1).lower(), "data": encoded}
 
 
-def generate_local_recolor(source_image, selection_mask, target_color):
-  """Recolor only the brushed area while retaining its original light and texture."""
-  if not isinstance(target_color, str) or not re.fullmatch(
-      r"#[0-9a-fA-F]{6}", target_color
-  ):
-    raise ValueError("Lütfen geçerli bir renk seç.")
+def generate_masked_image_edit(prompt, source_image, selection_mask):
+  """Edit a brush-selected image region and retain every unselected source pixel."""
   try:
     source_bytes = base64.b64decode(source_image["data"], validate=True)
     mask_bytes = base64.b64decode(selection_mask["data"], validate=True)
@@ -2819,24 +2833,48 @@ def generate_local_recolor(source_image, selection_mask, target_color):
   except (OSError, Image.DecompressionBombError) as error:
     raise ValueError("Kaynak görsel veya fırça seçimi okunamadı.") from error
 
-  target_rgb = tuple(int(target_color[index:index + 2], 16) for index in (1, 3, 5))
-  target_hue, target_saturation, target_value = Image.new(
-      "RGB", (1, 1), target_rgb
-  ).convert("HSV").getpixel((0, 0))
-  source_crop = source.crop(bounds)
-  mask_crop = mask.crop(bounds)
-  hue, saturation, value = source_crop.convert("HSV").split()
-  value_scale = 0.15 + 0.85 * (target_value / 255)
-  recolored_hsv = Image.merge(
-      "HSV",
-      (
-          Image.new("L", source_crop.size, target_hue),
-          Image.new("L", source_crop.size, target_saturation),
-          value.point([round(channel * value_scale) for channel in range(256)]),
-      ),
+  width, height = source.size
+  margin = max(48, round(max(width, height) * 0.08))
+  crop_bounds = (
+      max(0, bounds[0] - margin),
+      max(0, bounds[1] - margin),
+      min(width, bounds[2] + margin),
+      min(height, bounds[3] + margin),
   )
+  source_crop = source.crop(crop_bounds)
+  source_buffer = io.BytesIO()
+  source_crop.save(source_buffer, format="PNG")
+  crop_data = base64.b64encode(source_buffer.getvalue()).decode("ascii")
+  edit_prompt = (
+      "Make this precise photo edit: "
+      + prompt.strip()
+      + ". The supplied image is a crop around the area selected by the user. "
+      "Apply the requested change naturally and realistically. Preserve the identity, "
+      "shape, pose, perspective, lighting, and all surrounding details that the request "
+      "does not ask to change. Do not add unrelated objects, text, or styling."
+  )
+  generated_url = generate_image_with_cloudflare(
+      edit_prompt,
+      {"mime_type": "image/png", "data": crop_data},
+  )
+  try:
+    generated = parse_image_data_url(generated_url)
+    generated_bytes = base64.b64decode(generated["data"], validate=True)
+    with Image.open(io.BytesIO(generated_bytes)) as generated_file:
+      generated_crop = ImageOps.exif_transpose(generated_file).convert("RGB")
+  except (OSError, Image.DecompressionBombError, ValueError) as error:
+    raise ImageUnavailableError(
+        "Görsel düzenleme servisi geçerli bir görsel döndürmedi."
+    ) from error
+
+  if generated_crop.size != source_crop.size:
+    generated_crop = ImageOps.fit(
+        generated_crop,
+        source_crop.size,
+        method=Image.Resampling.LANCZOS,
+    )
   result = source.copy()
-  result.paste(recolored_hsv.convert("RGB"), bounds, mask_crop)
+  result.paste(generated_crop, crop_bounds, mask.crop(crop_bounds))
   result.putalpha(source_alpha)
   output = io.BytesIO()
   result.save(output, format="PNG", optimize=True)
@@ -4004,25 +4042,12 @@ def api_image_generate(request):
     except ValueError as image_error:
       return JsonResponse({"error": str(image_error)}, status=400)
 
+    selection_mask = None
     if source_image:
-      selection_mask_url = data.get("selection_mask")
-      target_color = data.get("target_color")
       try:
-        selection_mask = parse_image_data_url(selection_mask_url)
-        image_url = generate_local_recolor(
-            source_image,
-            selection_mask,
-            target_color,
-        )
+        selection_mask = parse_image_data_url(data.get("selection_mask"))
       except ValueError as image_error:
         return JsonResponse({"error": str(image_error)}, status=400)
-      except Exception as image_error:
-        logger.exception("Local image recoloring failed")
-        return JsonResponse(
-            {"error": friendly_api_error(image_error)},
-            status=500,
-        )
-      return JsonResponse({"status": "success", "image_url": image_url})
 
     now = time.monotonic()
     with _image_request_lock:
@@ -4038,7 +4063,7 @@ def api_image_generate(request):
     if usage_date is None:
       return JsonResponse({
           "error": (
-              f"Günlük görsel hakkın ({IMAGE_DAILY_LIMIT} adet) doldu. "
+              f"Günlük görsel işlem hakkın ({IMAGE_DAILY_LIMIT} adet) doldu. "
               "Hakkın gece yarısı yenilenir; sohbet ve sesli yanıt özelliklerini "
               "kullanmaya devam edebilirsin."
           )
@@ -4046,13 +4071,19 @@ def api_image_generate(request):
 
     image_succeeded = False
     try:
-      image_url = generate_image_with_cloudflare(prompt)
+      image_url = (
+          generate_masked_image_edit(prompt, source_image, selection_mask)
+          if source_image
+          else generate_image_with_cloudflare(prompt)
+      )
       image_succeeded = True
       return JsonResponse({"status": "success", "image_url": image_url})
     except ImageUnavailableError as img_error:
       return JsonResponse({"error": str(img_error)}, status=503)
+    except ValueError as img_error:
+      return JsonResponse({"error": str(img_error)}, status=400)
     except Exception as img_error:
-      logger.warning("Image generation failed: %s", img_error)
+      logger.warning("Image generation or edit failed: %s", img_error)
       return JsonResponse({"error": friendly_api_error(img_error)}, status=503)
     finally:
       complete_image_usage(request.user.pk, usage_date, image_succeeded)

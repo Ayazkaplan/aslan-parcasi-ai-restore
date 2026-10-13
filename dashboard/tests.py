@@ -869,6 +869,19 @@ class ImageGenerationTests(TestCase):
         self.assertEqual(prompt.count("clearly visible branded product packaging"), 1)
         self.assertIn("carefully art-directed", prompt)
 
+    def test_default_photo_prompt_frames_the_complete_subject_and_scene(self):
+        prompt = views.enhance_image_prompt("Bir kedi oluştur")
+
+        self.assertIn("complete main subject clearly inside the frame", prompt)
+        self.assertIn("do not crop to only the head or face", prompt)
+        self.assertIn("full-frame camera", prompt)
+        self.assertIn("subtle natural imperfections", prompt)
+
+    def test_explicit_close_up_request_keeps_close_up_framing(self):
+        prompt = views.enhance_image_prompt("Kedinin yüzünü yakın çekim oluştur")
+
+        self.assertNotIn("do not crop to only the head or face", prompt)
+
     def test_cloudflare_requires_server_side_credentials(self):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(views.ImageUnavailableError):
@@ -926,14 +939,31 @@ class ImageGenerationTests(TestCase):
         self.assertIn("source_image: editing.sourceImage", template)
         self.assertIn("source_url: data.image_url", template)
         self.assertIn("generateButton.disabled = editing", template)
-        self.assertIn("selection_mask: maskCanvas.toDataURL('image/png')", template)
+        self.assertIn("selectionMask: null", template)
+        self.assertIn("pendingImageEdit.selectionMask = maskCanvas.toDataURL('image/png')", template)
+        self.assertIn("selection_mask: editing.selectionMask", template)
         self.assertIn("image-brush-editor", template)
-        self.assertIn("Fırçayla düzenlenecek alanı seç", template)
+        self.assertIn("Seçtiğin alanda ne değişsin?", template)
         self.assertIn("if (pendingImageEdit) {", template)
-        edit_flow = template.split("async function continueEditingImage()", 1)[1].split(
+        edit_flow = template.split("async function continueEditingImage(prompt)", 1)[1].split(
             "async function generateImage(", 1
         )[0]
         self.assertNotIn("addGeneratedImageBranding", edit_flow)
+        self.assertNotIn(
+            "Fırçayla seçilen alanın rengini değiştirmek istiyorum.",
+            edit_flow,
+        )
+        self.assertIn(
+            'id="applyImageBrush" onclick="saveImageBrushSelection()"',
+            template,
+        )
+        self.assertIn("return continueEditingImage(text)", template)
+        self.assertIn("sender: 'user',\n            text: userPrompt", edit_flow)
+        self.assertIn("text: userPrompt", edit_flow)
+        key_handler = template.split("function handleKeyPress(e)", 1)[1].split(
+            "async function sendMessage", 1
+        )[0]
+        self.assertNotIn("continueEditingImage", key_handler)
 
     def test_generated_image_retry_uses_the_image_api_and_plain_prompt(self):
         template_path = Path(__file__).parent / "templates" / "dashboard" / "index.html"
@@ -956,7 +986,7 @@ class ImageGenerationTests(TestCase):
         self.assertIn("--image-accent", template)
         self.assertIn("Aslan Parçası özenle hazırlıyor", template)
 
-    def test_brush_edit_changes_only_selected_pixels_without_using_ai_quota(self):
+    def test_brush_prompt_edits_only_selected_pixels_and_reserves_image_quota(self):
         source = views.Image.new("RGBA", (8, 4), "orange")
         source.putpixel((6, 1), (10, 20, 30, 0))
         source_buffer = io.BytesIO()
@@ -973,26 +1003,40 @@ class ImageGenerationTests(TestCase):
         mask_url = "data:image/png;base64," + base64.b64encode(
             mask_buffer.getvalue()
         ).decode("ascii")
+        edited = views.Image.new("RGB", (8, 4), "green")
+        edited_buffer = io.BytesIO()
+        edited.save(edited_buffer, format="PNG")
+        edited_url = "data:image/png;base64," + base64.b64encode(
+            edited_buffer.getvalue()
+        ).decode("ascii")
+        prompt = "Seçilen alandaki ceketi kırmızı yap."
 
-        with patch("dashboard.views.generate_image_with_cloudflare") as generate:
+        with patch(
+            "dashboard.views.generate_image_with_cloudflare",
+            return_value=edited_url,
+        ) as generate:
             response = self.client.post(
                 reverse("api_image_generate"),
                 data=json.dumps({
-                    "prompt": "Fırçayla seçilen alanın rengini değiştir.",
+                    "prompt": prompt,
                     "source_image": source_url,
                     "selection_mask": mask_url,
-                    "target_color": "#000000",
                 }),
                 content_type="application/json",
             )
 
         self.assertEqual(response.status_code, 200)
-        generate.assert_not_called()
+        self.assertEqual(generate.call_count, 1)
+        self.assertIn(prompt, generate.call_args.args[0])
+        self.assertIn("crop around the area selected by the user", generate.call_args.args[0])
+        self.assertEqual(generate.call_args.args[1]["mime_type"], "image/png")
         edited_bytes = base64.b64decode(response.json()["image_url"].split(",", 1)[1])
         with views.Image.open(io.BytesIO(edited_bytes)) as edited:
-            self.assertEqual(edited.getpixel((1, 1)), (38, 38, 38, 255))
+            self.assertEqual(edited.getpixel((1, 1)), (0, 128, 0, 255))
             self.assertEqual(edited.getpixel((6, 1)), (10, 20, 30, 0))
-        self.assertFalse(ImageDailyUsage.objects.filter(user=self.user).exists())
+        usage = ImageDailyUsage.objects.get(user=self.user)
+        self.assertEqual(usage.successful_count, 1)
+        self.assertEqual(usage.pending_count, 0)
 
     def test_brush_edit_rejects_an_empty_mask(self):
         source = views.Image.new("RGB", (4, 4), "orange")
@@ -1011,13 +1055,15 @@ class ImageGenerationTests(TestCase):
                 "prompt": "Fırçayla seçilen alanın rengini değiştir.",
                 "source_image": to_data_url(source_buffer),
                 "selection_mask": to_data_url(mask_buffer),
-                "target_color": "#000000",
             }),
             content_type="application/json",
         )
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("en az bir alan", response.json()["error"])
+        usage = ImageDailyUsage.objects.get(user=self.user)
+        self.assertEqual(usage.successful_count, 0)
+        self.assertEqual(usage.pending_count, 0)
 
     def test_meaningless_image_prompt_returns_actionable_error(self):
         with patch("dashboard.views.generate_image_with_cloudflare") as generate:
