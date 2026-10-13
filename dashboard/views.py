@@ -398,6 +398,39 @@ def translate_prompt_to_english(prompt):
   return translated
 
 
+def _requests_full_subject(prompt):
+  return bool(re.search(
+      r"\b(?:tüm\w*|bütün\w*|hepsini|tamam(?:ı|ını|ini|i|u|unu|ü|ünü)|"
+      r"entire|whole|full[- ]body|full[- ]length|head[- ]to[- ]toe)\b",
+      prompt or "",
+      re.IGNORECASE,
+  ))
+
+
+def _animal_subject(prompt):
+  subjects = (
+      (r"\b(?:kedi\w*|cat)\b", "cat"),
+      (r"\b(?:köpek\w*|kopek\w*|dog)\b", "dog"),
+      (r"\b(?:kuş\w*|kus\w*|bird)\b", "bird"),
+      (r"\b(?:horse|at(?:ı|ın|ını|lar\w*|lara|ların|ları))\b", "horse"),
+      (r"\b(?:tavşan\w*|tavsan\w*|rabbit)\b", "rabbit"),
+      (r"\b(?:aslan\w*|lion)\b", "lion"),
+      (r"\b(?:kaplan\w*|tiger)\b", "tiger"),
+      (r"\b(?:tilki\w*|fox)\b", "fox"),
+      (r"\b(?:kurt\w*|wolf)\b", "wolf"),
+      (r"\b(?:geyik\w*|deer)\b", "deer"),
+      (r"\b(?:inek\w*|cow)\b", "cow"),
+      (r"\b(?:koyun\w*|sheep)\b", "sheep"),
+      (r"\b(?:fil\w*|elephant)\b", "elephant"),
+      (r"\b(?:ayı\w*|ayi\w*|bear)\b", "bear"),
+      (r"\b(?:maymun\w*|monkey)\b", "monkey"),
+  )
+  for pattern, subject in subjects:
+    if re.search(pattern, prompt or "", re.IGNORECASE):
+      return subject
+  return None
+
+
 def enhance_image_prompt(prompt):
   """Turn a normal user prompt into a stable, polished image request."""
   raw = (prompt or "").strip()
@@ -429,6 +462,7 @@ def enhance_image_prompt(prompt):
       raw + " " + english,
       re.IGNORECASE,
   )
+  animal_subject = _animal_subject(raw + " " + english)
 
   if re.search(r"\b(mouse\s*pad|mouse\s*mat|mousepad|fare\s+altl[ıi]ğ[ıi])\b", raw, re.I):
     return (
@@ -482,11 +516,20 @@ def enhance_image_prompt(prompt):
   )
   framing_direction = ""
   if not explicit_close_up:
-    framing_direction = (
-        "Use a medium or full shot by default: pull the camera back enough to show "
-        "the complete main subject clearly inside the frame, with natural space around "
-        "it and relevant scene context; do not crop to only the head or face"
-    )
+    if animal_subject:
+      framing_direction = (
+          f"Full-body animal photograph of the entire {animal_subject}: show its "
+          "complete head, torso, all legs and paws or hooves, and tail fully inside "
+          "the frame. Keep the animal small enough to fit, centered with visible ground "
+          "and generous space around it. Use a pulled-back full shot, not a portrait; "
+          "never crop to the face, head, or cut off any part of the animal"
+      )
+    else:
+      framing_direction = (
+          "Use a medium or full shot by default: pull the camera back enough to show "
+          "the complete main subject clearly inside the frame, with natural space around "
+          "it and relevant scene context; do not crop to only the head or face"
+      )
   return f"{topic}, {detail_prefix}, {framing_direction}, {finishing_direction}".strip(", ")
 
 
@@ -2884,14 +2927,24 @@ def generate_masked_image_edit(prompt, source_image, selection_mask):
 
 def _image_edit_instruction(prompt):
   text = (prompt or "").strip()
-  subject = None
-  for pattern, name in (
-      (r"\b(?:kedi\w*|cat)\b", "cat"),
-      (r"\b(?:köpek\w*|dog)\b", "dog"),
-  ):
-    if re.search(pattern, text, re.IGNORECASE):
-      subject = name
-      break
+  subject = _animal_subject(text)
+
+  if _requests_full_subject(text):
+    subject_description = (
+        f"the entire {subject}" if subject else "the complete main subject"
+    )
+    anatomy = (
+        "from head through the complete body to all legs, paws or hooves, and tail"
+        if subject
+        else "with every part fully visible"
+    )
+    return (
+        f"Recompose the selected area as a pulled-back full-body photograph showing "
+        f"{subject_description} {anatomy}, centered and completely inside the frame "
+        "with visible space around it. The user explicitly requests the whole subject: "
+        "do not preserve a close-up crop, portrait framing, or oversized face. "
+        f"Follow the user's requested details: {text}"
+    )
 
   color_matches = []
   for source, target in _TURKISH_PROMPT_MAP.items():
@@ -2929,12 +2982,20 @@ def generate_image_with_cloudflare(prompt, source_image=None):
   )
   try:
     if source_image:
+      full_subject_requested = _requests_full_subject(prompt)
       request_prompt = (
           "Edit the supplied image. Apply only this change: "
           + _image_edit_instruction(prompt)
-          + " Keep the exact same subject, species, identity, face, pose, size, "
-          "composition, background, and lighting. Do not replace or reinterpret "
-          "the subject. Leave every other detail unchanged."
+          + (
+              " Preserve the subject's recognizable identity and species. "
+              "The user requests a different, wider composition, so do not preserve "
+              "the original crop, subject size, or pose if that prevents showing the "
+              "whole subject. Leave unrequested scene details unchanged."
+              if full_subject_requested
+              else " Keep the same subject, species, identity, face, pose, size, "
+              "composition, background, and lighting. Do not replace or reinterpret "
+              "the subject. Leave every other detail unchanged."
+          )
       )
       image_bytes = base64.b64decode(source_image["data"], validate=True)
       with Image.open(io.BytesIO(image_bytes)) as source:
@@ -3981,7 +4042,7 @@ def api_debug(request):
           "normal": GEMINI_MODEL,
           "fast": GEMINI_FAST_MODEL,
           "image": "@cf/bytedance/stable-diffusion-xl-lightning",
-          "image_edit": "local-brush-recolor",
+          "image_edit": CLOUDFLARE_IMAGE_EDIT_MODEL,
       },
       "chat_priority": [
           f"{endpoint.provider}:{endpoint.models[0]}"

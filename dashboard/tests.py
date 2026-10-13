@@ -872,15 +872,24 @@ class ImageGenerationTests(TestCase):
     def test_default_photo_prompt_frames_the_complete_subject_and_scene(self):
         prompt = views.enhance_image_prompt("Bir kedi oluştur")
 
-        self.assertIn("complete main subject clearly inside the frame", prompt)
-        self.assertIn("do not crop to only the head or face", prompt)
+        self.assertIn("Full-body animal photograph of the entire cat", prompt)
+        self.assertIn("all legs and paws", prompt)
+        self.assertIn("never crop to the face, head", prompt)
         self.assertIn("full-frame camera", prompt)
         self.assertIn("subtle natural imperfections", prompt)
 
     def test_explicit_close_up_request_keeps_close_up_framing(self):
         prompt = views.enhance_image_prompt("Kedinin yüzünü yakın çekim oluştur")
 
-        self.assertNotIn("do not crop to only the head or face", prompt)
+        self.assertNotIn("Full-body animal photograph", prompt)
+
+    def test_full_subject_edit_instruction_overrides_close_crop_constraints(self):
+        prompt = views._image_edit_instruction("Kedinin tamamını göster")
+
+        self.assertIn("pulled-back full-body photograph", prompt)
+        self.assertIn("the entire cat", prompt)
+        self.assertIn("all legs, paws or hooves, and tail", prompt)
+        self.assertIn("do not preserve a close-up crop", prompt)
 
     def test_cloudflare_requires_server_side_credentials(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -919,6 +928,34 @@ class ImageGenerationTests(TestCase):
 
         self.assertTrue(any("Invalid image input" in message for message in logs.output))
 
+    def test_cloudflare_full_subject_edit_allows_reframing_the_source(self):
+        source = views.Image.new("RGB", (8, 4), "orange")
+        source_buffer = io.BytesIO()
+        source.save(source_buffer, format="PNG")
+        source_image = {
+            "mime_type": "image/png",
+            "data": base64.b64encode(source_buffer.getvalue()).decode("ascii"),
+        }
+        response = Mock()
+        response.status_code = 200
+        response.headers = {"Content-Type": "image/png"}
+        response.content = b"edited-image"
+
+        with patch.dict(os.environ, {
+            "CLOUDFLARE_ACCOUNT_ID": "account-id",
+            "CLOUDFLARE_API_TOKEN": "private-token",
+        }), patch("dashboard.views.requests.post", return_value=response) as post:
+            views.generate_image_with_cloudflare(
+                "Kedinin tamamını göster",
+                source_image,
+            )
+
+        request_prompt = post.call_args.kwargs["data"]["prompt"]
+        self.assertIn("pulled-back full-body photograph", request_prompt)
+        self.assertIn("the entire cat", request_prompt)
+        self.assertIn("do not preserve a close-up crop", request_prompt)
+        self.assertNotIn("Keep the exact same subject", request_prompt)
+
     def test_generated_image_displays_with_aslan_parcasi_branding(self):
         template_path = Path(__file__).parent / "templates" / "dashboard" / "index.html"
         template = template_path.read_text(encoding="utf-8")
@@ -948,7 +985,8 @@ class ImageGenerationTests(TestCase):
         edit_flow = template.split("async function continueEditingImage(prompt)", 1)[1].split(
             "async function generateImage(", 1
         )[0]
-        self.assertNotIn("addGeneratedImageBranding", edit_flow)
+        self.assertIn("const brandedImage = await addGeneratedImageBranding(data.image_url)", edit_flow)
+        self.assertIn("url: brandedImage", edit_flow)
         self.assertNotIn(
             "Fırçayla seçilen alanın rengini değiştirmek istiyorum.",
             edit_flow,

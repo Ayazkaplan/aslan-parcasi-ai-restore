@@ -3216,13 +3216,15 @@
                 throw new Error(data.error || `Görsel düzenlenemedi (HTTP ${response.status}).`);
             }
 
+            const brandedImage = await addGeneratedImageBranding(data.image_url);
             pendingImageEdit = null;
             closeImageBrushEditor();
             finishPlaceholder({
                 sender: 'ai',
                 text: 'Düzenlediğim görsel:',
                 images: [{
-                    url: data.image_url,
+                    url: brandedImage,
+                    source_url: data.image_url,
                     name: editing.name,
                     generated: true
                 }],
