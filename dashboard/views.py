@@ -3121,8 +3121,6 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
         )
         image_buffer = io.BytesIO()
         inpaint_image.save(image_buffer, format="PNG")
-        inpaint_mask_buffer = io.BytesIO()
-        framed_mask.save(inpaint_mask_buffer, format="PNG")
         inpaint_payload = {
             "prompt": request_prompt,
             "negative_prompt": (
@@ -3130,7 +3128,7 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
                 "duplicate tail, mirrored anatomy, hard cutout edge"
             ),
             "image_b64": base64.b64encode(image_buffer.getvalue()).decode("ascii"),
-            "mask": list(inpaint_mask_buffer.getvalue()),
+            "mask": list(framed_mask.tobytes()),
             "width": inpaint_image.width,
             "height": inpaint_image.height,
             "num_steps": 20,
