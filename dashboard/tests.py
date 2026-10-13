@@ -835,7 +835,7 @@ class ImageGenerationTests(TestCase):
         generate.assert_called_once_with(prompt)
         self.assertEqual(views.image_usage_today(self.user.pk), 1)
 
-    def test_cloudflare_sdxl_lightning_receives_prompt_and_returns_png(self):
+    def test_cloudflare_sdxl_base_receives_prompt_and_returns_png(self):
         response = Mock()
         response.status_code = 200
         response.headers = {"Content-Type": "image/png"}
@@ -851,10 +851,10 @@ class ImageGenerationTests(TestCase):
             "data:image/png;base64,"
             + base64.b64encode(b"png-image").decode("ascii"),
         )
-        self.assertIn("/@cf/bytedance/stable-diffusion-xl-lightning", post.call_args.args[0])
+        self.assertIn(views.CLOUDFLARE_IMAGE_MODEL, post.call_args.args[0])
         self.assertEqual(post.call_args.kwargs["json"], {
             "prompt": views.enhance_image_prompt("Photorealistic red mousepad"),
-            "num_steps": 4,
+            "num_steps": 20,
         })
         self.assertIn("carefully art-directed", post.call_args.kwargs["json"]["prompt"])
         self.assertEqual(
@@ -873,11 +873,15 @@ class ImageGenerationTests(TestCase):
         prompt = views.enhance_image_prompt("Bir kedi oluştur")
 
         self.assertIn("Full-body animal photograph of the entire cat", prompt)
-        self.assertIn("all legs and paws", prompt)
-        self.assertIn("never crop to the face, head", prompt)
+        self.assertIn("every leg and paw", prompt)
+        self.assertIn("never a portrait, headshot, or close-up", prompt)
         self.assertIn("natural candid three-quarter pose", prompt)
         self.assertIn("single tail must emerge and curve on one side only", prompt)
         self.assertIn("never mirror or duplicate body parts", prompt)
+        self.assertLess(
+            prompt.index("Full-body animal photograph"),
+            prompt.index("Exact user brief"),
+        )
         self.assertIn("full-frame camera", prompt)
         self.assertIn("subtle natural imperfections", prompt)
 
@@ -885,6 +889,40 @@ class ImageGenerationTests(TestCase):
         prompt = views.enhance_image_prompt("Kedinin yüzünü yakın çekim oluştur")
 
         self.assertNotIn("Full-body animal photograph", prompt)
+
+    def test_animal_generation_uses_landscape_and_negative_crop_constraints(self):
+        response = Mock()
+        response.status_code = 200
+        response.headers = {"Content-Type": "image/png"}
+        response.content = b"png-image"
+        with patch.dict(os.environ, {
+            "CLOUDFLARE_ACCOUNT_ID": "account-id",
+            "CLOUDFLARE_API_TOKEN": "private-token",
+        }), patch("dashboard.views.requests.post", return_value=response) as post:
+            views.generate_image_with_cloudflare("Fotogerçekçi turuncu bir kedi")
+
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual((payload["width"], payload["height"]), (1024, 768))
+        self.assertEqual(payload["num_steps"], 20)
+        self.assertIn("close-up", payload["negative_prompt"])
+        self.assertIn("duplicate tail", payload["negative_prompt"])
+        self.assertIn("Full-body animal photograph", payload["prompt"])
+
+    def test_animal_close_up_does_not_receive_full_body_constraints(self):
+        response = Mock()
+        response.status_code = 200
+        response.headers = {"Content-Type": "image/png"}
+        response.content = b"png-image"
+        with patch.dict(os.environ, {
+            "CLOUDFLARE_ACCOUNT_ID": "account-id",
+            "CLOUDFLARE_API_TOKEN": "private-token",
+        }), patch("dashboard.views.requests.post", return_value=response) as post:
+            views.generate_image_with_cloudflare("Kedinin yüzünü yakın çekim oluştur")
+
+        payload = post.call_args.kwargs["json"]
+        self.assertNotIn("negative_prompt", payload)
+        self.assertNotIn("width", payload)
+        self.assertNotIn("Full-body animal photograph", payload["prompt"])
 
     def test_full_subject_edit_instruction_overrides_close_crop_constraints(self):
         prompt = views._image_edit_instruction("Kedinin tamamını göster")
@@ -1013,6 +1051,59 @@ class ImageGenerationTests(TestCase):
             self.assertEqual(sent_mask.getpixel((500, 100)), 0)
         self.assertIn("Change only the background", payload["prompt"])
         self.assertIn("Preserve the cat completely and exactly", payload["prompt"])
+        with views.Image.open(io.BytesIO(base64.b64decode(edited_url.split(",", 1)[1]))) as edited:
+            self.assertEqual(edited.size, source.size)
+
+    def test_cloudflare_inpainting_503_falls_back_to_free_sdxl_base(self):
+        source = views.Image.new("RGB", (8, 4), "orange")
+        source_buffer = io.BytesIO()
+        source.save(source_buffer, format="PNG")
+        mask = views.Image.new("L", (8, 4), 0)
+        mask.putpixel((2, 2), 255)
+        mask_buffer = io.BytesIO()
+        mask.save(mask_buffer, format="PNG")
+        output = views.Image.new("RGB", (256, 256), "green")
+        output_buffer = io.BytesIO()
+        output.save(output_buffer, format="PNG")
+        unavailable = Mock()
+        unavailable.status_code = 503
+        unavailable.text = "model temporarily unavailable"
+        success = Mock()
+        success.status_code = 200
+        success.headers = {"Content-Type": "image/png"}
+        success.content = output_buffer.getvalue()
+        source_image = {
+            "mime_type": "image/png",
+            "data": base64.b64encode(source_buffer.getvalue()).decode("ascii"),
+        }
+        selection_mask = {
+            "mime_type": "image/png",
+            "data": base64.b64encode(mask_buffer.getvalue()).decode("ascii"),
+        }
+
+        with patch.dict(os.environ, {
+            "CLOUDFLARE_ACCOUNT_ID": "account-id",
+            "CLOUDFLARE_API_TOKEN": "private-token",
+        }), patch(
+            "dashboard.views.requests.post",
+            side_effect=[unavailable, success],
+        ) as post:
+            edited_url = views.generate_image_with_cloudflare(
+                "Kedinin arka planı bahçe olsun",
+                source_image,
+                selection_mask,
+            )
+
+        self.assertEqual(post.call_count, 2)
+        self.assertIn(views.CLOUDFLARE_IMAGE_INPAINT_MODEL, post.call_args_list[0].args[0])
+        self.assertIn(
+            views.CLOUDFLARE_IMAGE_INPAINT_FALLBACK_MODEL,
+            post.call_args_list[1].args[0],
+        )
+        self.assertEqual(
+            post.call_args_list[0].kwargs["json"],
+            post.call_args_list[1].kwargs["json"],
+        )
         with views.Image.open(io.BytesIO(base64.b64decode(edited_url.split(",", 1)[1]))) as edited:
             self.assertEqual(edited.size, source.size)
 

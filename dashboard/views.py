@@ -51,6 +51,8 @@ GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_FAST_MODEL = "gemini-2.5-flash-lite"
 CLOUDFLARE_IMAGE_EDIT_MODEL = "@cf/black-forest-labs/flux-2-klein-4b"
 CLOUDFLARE_IMAGE_INPAINT_MODEL = "@cf/runwayml/stable-diffusion-v1-5-inpainting"
+CLOUDFLARE_IMAGE_MODEL = "@cf/stabilityai/stable-diffusion-xl-base-1.0"
+CLOUDFLARE_IMAGE_INPAINT_FALLBACK_MODEL = CLOUDFLARE_IMAGE_MODEL
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 REASONING_MARKER = "\x00R\x00"
 
@@ -432,6 +434,15 @@ def _animal_subject(prompt):
   return None
 
 
+def _has_explicit_close_up(prompt):
+  return bool(re.search(
+      r"\b(close[- ]?up|extreme close[- ]?up|headshot|macro|"
+      r"yakın\s*çekim\w*|yakın\s+plan\w*|makro\w*|sadece\s+yüz\w*)\b",
+      prompt or "",
+      re.IGNORECASE,
+  ))
+
+
 def enhance_image_prompt(prompt):
   """Turn a normal user prompt into a stable, polished image request."""
   raw = (prompt or "").strip()
@@ -457,12 +468,7 @@ def enhance_image_prompt(prompt):
         f"Exact user brief: {topic}"
     )
 
-  explicit_close_up = re.search(
-      r"\b(close[- ]?up|extreme close[- ]?up|headshot|macro|"
-      r"yakın\s*çekim\w*|yakın\s+plan\w*|makro\w*|sadece\s+yüz\w*)\b",
-      raw + " " + english,
-      re.IGNORECASE,
-  )
+  explicit_close_up = _has_explicit_close_up(raw + " " + english)
   animal_subject = _animal_subject(raw + " " + english)
 
   if re.search(r"\b(mouse\s*pad|mouse\s*mat|mousepad|fare\s+altl[ıi]ğ[ıi])\b", raw, re.I):
@@ -519,16 +525,17 @@ def enhance_image_prompt(prompt):
   if not explicit_close_up:
     if animal_subject:
       framing_direction = (
-          f"Full-body animal photograph of the entire {animal_subject}: show its "
-          "complete head, torso, all legs and paws or hooves, and tail fully inside "
-          "the frame. Keep the animal small enough to fit, centered with visible ground "
-          "and generous space around it. Use a pulled-back full shot, not a portrait; "
-          "never crop to the face, head, or cut off any part of the animal. Capture a "
-          "natural candid three-quarter pose, body slightly turned, head gently tilted, "
-          "one forepaw slightly ahead, gaze just off-camera, and relaxed uneven weight "
-          "distribution; avoid a front-facing symmetrical pose. The single tail must "
-          "emerge and curve on one side only. Keep anatomy natural and asymmetric: "
-          "exactly one tail and four legs, never mirror or duplicate body parts"
+          f"Full-body animal photograph of the entire {animal_subject}, composed as "
+          "a pulled-back landscape environmental photograph from several meters away. "
+          "Show its complete head, torso, every leg and paw or hoof, and the single "
+          "tail fully inside the frame; the animal must occupy no more than 60 percent "
+          "of the image height, with visible ground and generous space around it. "
+          "Use an eye-level full shot, never a portrait, headshot, or close-up; do not "
+          "crop or cut off any body part. Capture a natural candid three-quarter pose "
+          "with the body slightly turned, one forepaw slightly ahead, gaze just off-camera, "
+          "and uneven relaxed weight distribution. Avoid a front-facing symmetrical pose. "
+          "The single tail must emerge and curve on one side only. Keep the anatomy "
+          "natural and asymmetric; never mirror or duplicate body parts."
       )
     else:
       framing_direction = (
@@ -536,6 +543,11 @@ def enhance_image_prompt(prompt):
           "the complete main subject clearly inside the frame, with natural space around "
           "it and relevant scene context; do not crop to only the head or face"
       )
+  if animal_subject and not explicit_close_up:
+    return (
+        f"{framing_direction} Exact user brief: {topic}. "
+        f"{detail_prefix}. {finishing_direction}"
+    ).strip(" .")
   return f"{topic}, {detail_prefix}, {framing_direction}, {finishing_direction}".strip(", ")
 
 
@@ -3052,7 +3064,7 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
       if selection_mask
       else CLOUDFLARE_IMAGE_EDIT_MODEL
       if source_image
-      else "@cf/bytedance/stable-diffusion-xl-lightning"
+      else CLOUDFLARE_IMAGE_MODEL
   )
   endpoint = (
       "https://api.cloudflare.com/client/v4/accounts/"
@@ -3111,28 +3123,47 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
         inpaint_image.save(image_buffer, format="PNG")
         inpaint_mask_buffer = io.BytesIO()
         framed_mask.save(inpaint_mask_buffer, format="PNG")
+        inpaint_payload = {
+            "prompt": request_prompt,
+            "negative_prompt": (
+                "changed foreground subject, damaged silhouette, extra limbs, "
+                "duplicate tail, mirrored anatomy, hard cutout edge"
+            ),
+            "image_b64": base64.b64encode(image_buffer.getvalue()).decode("ascii"),
+            "mask": list(inpaint_mask_buffer.getvalue()),
+            "width": inpaint_image.width,
+            "height": inpaint_image.height,
+            "num_steps": 20,
+            "strength": 0.85,
+            "guidance": 7.5,
+        }
+        request_headers = {
+            "Authorization": f"******",
+            "Content-Type": "application/json",
+        }
         inpaint_response = requests.post(
             endpoint,
-            headers={
-                "Authorization": f"******",
-                "Content-Type": "application/json",
-            },
-            json={
-                "prompt": request_prompt,
-                "negative_prompt": (
-                    "changed foreground subject, damaged silhouette, extra limbs, "
-                    "duplicate tail, mirrored anatomy, hard cutout edge"
-                ),
-                "image_b64": base64.b64encode(image_buffer.getvalue()).decode("ascii"),
-                "mask": list(inpaint_mask_buffer.getvalue()),
-                "width": inpaint_image.width,
-                "height": inpaint_image.height,
-                "num_steps": 20,
-                "strength": 0.85,
-                "guidance": 7.5,
-            },
+            headers=request_headers,
+            json=inpaint_payload,
             timeout=120,
         )
+        if inpaint_response.status_code == 503:
+          logger.warning(
+              "Cloudflare image model %s returned HTTP 503; retrying with %s",
+              model,
+              CLOUDFLARE_IMAGE_INPAINT_FALLBACK_MODEL,
+          )
+          model = CLOUDFLARE_IMAGE_INPAINT_FALLBACK_MODEL
+          endpoint = (
+              "https://api.cloudflare.com/client/v4/accounts/"
+              f"{quote(account_id, safe='')}/ai/run/{model}"
+          )
+          inpaint_response = requests.post(
+              endpoint,
+              headers=request_headers,
+              json=inpaint_payload,
+              timeout=120,
+          )
       response = inpaint_response if selection_mask else requests.post(
           endpoint,
           headers={"Authorization": f"Bearer {api_token}"},
@@ -3204,7 +3235,23 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
         encoded_image = base64.b64encode(image_bytes).decode("ascii")
       return f"data:{mime_type};base64,{encoded_image}"
 
-    payload = {"prompt": enhance_image_prompt(prompt), "num_steps": 4}
+    animal_full_body = (
+        _animal_subject(prompt) is not None
+        and not _has_explicit_close_up(prompt)
+    )
+    payload = {
+        "prompt": enhance_image_prompt(prompt),
+        "num_steps": 20,
+    }
+    if animal_full_body:
+      payload.update({
+          "negative_prompt": (
+              "close-up, portrait, headshot, cropped animal, head only, cut off paws, "
+              "cut off tail, duplicate tail, extra limbs, mirrored symmetrical anatomy"
+          ),
+          "width": 1024,
+          "height": 768,
+      })
     response = requests.post(
         endpoint,
         headers={
@@ -4182,8 +4229,9 @@ def api_debug(request):
       "models": {
           "normal": GEMINI_MODEL,
           "fast": GEMINI_FAST_MODEL,
-          "image": "@cf/bytedance/stable-diffusion-xl-lightning",
+          "image": CLOUDFLARE_IMAGE_MODEL,
           "image_edit": CLOUDFLARE_IMAGE_INPAINT_MODEL,
+          "image_edit_fallback": CLOUDFLARE_IMAGE_INPAINT_FALLBACK_MODEL,
       },
       "chat_priority": [
           f"{endpoint.provider}:{endpoint.models[0]}"
