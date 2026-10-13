@@ -1065,14 +1065,14 @@ class ImageGenerationTests(TestCase):
         )
         payload = post.call_args.kwargs["json"]
         self.assertEqual((payload["width"], payload["height"]), (512, 256))
-        self.assertEqual(len(payload["mask"]), payload["width"] * payload["height"])
-        sent_mask = views.Image.frombytes(
-            "L",
-            (payload["width"], payload["height"]),
-            bytes(payload["mask"]),
-        )
-        self.assertGreater(sent_mask.getpixel((32, 100)), 0)
-        self.assertEqual(sent_mask.getpixel((500, 100)), 0)
+        with views.Image.open(io.BytesIO(bytes(payload["mask"]))) as encoded_mask:
+            sent_mask = encoded_mask.convert("L")
+            self.assertEqual(
+                sent_mask.size,
+                (payload["width"], payload["height"]),
+            )
+            self.assertGreater(sent_mask.getpixel((32, 100)), 0)
+            self.assertEqual(sent_mask.getpixel((500, 100)), 0)
         self.assertIn("Change only the background", payload["prompt"])
         self.assertIn("Preserve the cat completely and exactly", payload["prompt"])
         with views.Image.open(io.BytesIO(base64.b64decode(edited_url.split(",", 1)[1]))) as edited:
