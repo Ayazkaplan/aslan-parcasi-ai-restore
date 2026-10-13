@@ -3136,7 +3136,7 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
             "guidance": 7.5,
         }
         request_headers = {
-            "Authorization": f"******",
+            "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json",
         }
         inpaint_response = requests.post(

@@ -1059,6 +1059,10 @@ class ImageGenerationTests(TestCase):
             )
 
         self.assertIn(views.CLOUDFLARE_IMAGE_INPAINT_MODEL, post.call_args.args[0])
+        self.assertEqual(
+            post.call_args.kwargs["headers"]["Authorization"],
+            "Bearer private-token",
+        )
         payload = post.call_args.kwargs["json"]
         self.assertEqual((payload["width"], payload["height"]), (512, 256))
         self.assertEqual(len(payload["mask"]), payload["width"] * payload["height"])
