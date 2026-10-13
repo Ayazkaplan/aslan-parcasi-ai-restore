@@ -410,6 +410,17 @@ def _requests_full_subject(prompt):
   ))
 
 
+def _requests_pose_change(prompt):
+  return bool(re.search(
+      r"\b(?:otur\w*|oturt\w*|sitting|seated|sit|yat\w*|lying|lie|"
+      r"ayakta|standing|stand|koş\w*|kos\w*|running|run|zıpla\w*|"
+      r"zipla\w*|jump\w*|poz(?:isyon\w*|unda|u)?|duruş\w*|durus\w*|"
+      r"pose|repose)\b",
+      prompt or "",
+      re.IGNORECASE,
+  ))
+
+
 def _animal_subject(prompt):
   subjects = (
       (r"\b(?:kedi\w*|cat)\b", "cat"),
@@ -2906,13 +2917,23 @@ def generate_masked_image_edit(prompt, source_image, selection_mask):
   source_buffer = io.BytesIO()
   source_crop.save(source_buffer, format="PNG")
   crop_data = base64.b64encode(source_buffer.getvalue()).decode("ascii")
+  pose_change_requested = _requests_pose_change(prompt)
   edit_prompt = (
       "Make this precise photo edit: "
       + prompt.strip()
       + ". The supplied image is a crop around the area selected by the user. "
-      "Apply the requested change naturally and realistically. Preserve the identity, "
-      "shape, pose, perspective, lighting, and all surrounding details that the request "
-      "does not ask to change. Do not add unrelated objects, text, or styling."
+      "Apply the requested change naturally and realistically. "
+      + (
+          "The user explicitly requests a pose change, so change the pose as requested "
+          "instead of preserving the original pose. Keep the same individual, species, "
+          "face, eye color, distinctive fur colors and coat markings, body proportions, "
+          "perspective, lighting, and all unrequested details unchanged. Do not recolor "
+          "or redesign the subject. "
+          if pose_change_requested
+          else "Preserve the identity, shape, pose, perspective, lighting, and all "
+          "surrounding details that the request does not ask to change. "
+      )
+      + "Do not add unrelated objects, text, or styling."
   )
   mask_buffer = io.BytesIO()
   mask.crop(crop_bounds).save(mask_buffer, format="PNG")
@@ -2957,6 +2978,7 @@ def generate_masked_image_edit(prompt, source_image, selection_mask):
 def _image_edit_instruction(prompt):
   text = (prompt or "").strip()
   subject = _animal_subject(text)
+  pose_change_requested = _requests_pose_change(text)
 
   if re.search(
       r"\b(?:arka\s*plan\w*|arkaplan\w*|background\w*|backdrop\w*|fon\w*)\b",
@@ -2964,6 +2986,16 @@ def _image_edit_instruction(prompt):
       re.IGNORECASE,
   ):
     subject_description = f"the {subject}" if subject else "the existing foreground subject"
+    if pose_change_requested:
+      return (
+          f"Change only the background and re-pose {subject_description} as requested. "
+          "The pose is intentionally changing, but preserve the same individual, "
+          "species, face, eye color, distinctive fur colors and coat markings, body "
+          "proportions, and all other requested-independent foreground details. "
+          "Do not recolor or redesign the subject. Blend the requested background "
+          "naturally at its edge. "
+          f"Requested change: {text}"
+      )
     return (
         f"Change only the background to match the requested scene. Preserve "
         f"{subject_description} completely and exactly as in the source photo, including "
@@ -2989,6 +3021,17 @@ def _image_edit_instruction(prompt):
         "with visible space around it. The user explicitly requests the whole subject: "
         "do not preserve a close-up crop, portrait framing, or oversized face. "
         f"Follow the user's requested details: {text}"
+    )
+
+  if pose_change_requested:
+    subject_description = f"the existing {subject}" if subject else "the existing subject"
+    return (
+          f"Change {subject_description}'s pose exactly as requested. The pose is "
+          "intentionally changing, so do not preserve the original pose. Preserve the "
+          "same individual and species, recognizable face, eye color, distinctive fur "
+          "colors and coat markings, body proportions, camera perspective, lighting, "
+          "and background. Do not recolor or redesign the subject. Keep the new pose "
+          f"anatomically natural. Requested pose: {text}"
     )
 
   color_matches = []
@@ -3077,6 +3120,7 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
     if source_image:
       inpainting_geometry = None
       full_subject_requested = _requests_full_subject(prompt)
+      pose_change_requested = _requests_pose_change(prompt)
       background_edit_requested = bool(re.search(
           r"\b(?:arka\s*plan\w*|arkaplan\w*|background\w*|backdrop\w*|fon\w*)\b",
           prompt or "",
@@ -3096,10 +3140,19 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
                   "foreground subject, silhouette, fur, face, whiskers, pose, and size. "
                   "The rough brush selection may overlap the subject; do not alter those "
                   "foreground pixels. Blend the requested background naturally at its edge."
-                  if background_edit_requested
-                  else " Keep the same subject, species, identity, face, pose, size, "
-                  "composition, background, and lighting. Do not replace or reinterpret "
-                  "the subject. Leave every other detail unchanged."
+                  if background_edit_requested and not pose_change_requested
+                  else (
+                      " The user explicitly requests a pose change, so change the "
+                      "subject's pose as requested instead of preserving its original "
+                      "pose. Preserve the same individual, species, recognizable face, "
+                      "eye color, distinctive fur colors and coat markings, body "
+                      "proportions, background, lighting, and all unselected pixels. "
+                      "Do not recolor or redesign the subject."
+                      if pose_change_requested
+                      else " Keep the same subject, species, identity, face, pose, size, "
+                      "composition, background, and lighting. Do not replace or reinterpret "
+                      "the subject. Leave every other detail unchanged."
+                  )
               )
           )
       )
@@ -3131,6 +3184,12 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
             "negative_prompt": (
                 "changed foreground subject, damaged silhouette, extra limbs, "
                 "duplicate tail, mirrored anatomy, hard cutout edge"
+                + (
+                    ", different animal, different breed, changed fur color, "
+                    "changed coat pattern, missing distinctive markings, changed eye color"
+                    if pose_change_requested
+                    else ""
+                )
             ),
             "image_b64": base64.b64encode(image_buffer.getvalue()).decode("ascii"),
             "mask": list(mask_buffer.getvalue()),

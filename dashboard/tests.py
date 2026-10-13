@@ -940,6 +940,44 @@ class ImageGenerationTests(TestCase):
         self.assertIn("even where the rough brush selection overlaps it", prompt)
         self.assertIn("Requested background", prompt)
 
+    def test_pose_edit_instruction_changes_pose_but_preserves_animal_identity(self):
+        user_prompt = "Bu kediyi oturur bir pozisyonda istiyorum"
+        prompt = views._image_edit_instruction(user_prompt)
+
+        self.assertTrue(views._requests_pose_change(user_prompt))
+        self.assertIn("Change the existing cat's pose exactly as requested", prompt)
+        self.assertIn("do not preserve the original pose", prompt)
+        self.assertIn("distinctive fur colors and coat markings", prompt)
+        self.assertIn(user_prompt, prompt)
+
+    def test_masked_pose_edit_does_not_add_an_instruction_to_preserve_the_pose(self):
+        source = views.Image.new("RGB", (32, 32), "orange")
+        source_buffer = io.BytesIO()
+        source.save(source_buffer, format="PNG")
+        mask = views.Image.new("L", source.size, 255)
+        mask_buffer = io.BytesIO()
+        mask.save(mask_buffer, format="PNG")
+        source_data = base64.b64encode(source_buffer.getvalue()).decode("ascii")
+        mask_data = base64.b64encode(mask_buffer.getvalue()).decode("ascii")
+
+        with patch(
+            "dashboard.views.generate_image_with_cloudflare",
+            return_value="data:image/png;base64,"
+            + base64.b64encode(source_buffer.getvalue()).decode("ascii"),
+        ) as generate:
+            views.generate_masked_image_edit(
+                "Bu kediyi oturur bir pozisyonda istiyorum",
+                {"mime_type": "image/png", "data": source_data},
+                {"mime_type": "image/png", "data": mask_data},
+            )
+
+        prompt = generate.call_args.args[0]
+        self.assertIn("The user explicitly requests a pose change", prompt)
+        self.assertIn("change the pose as requested", prompt)
+        self.assertIn("same individual", prompt)
+        self.assertIn("distinctive fur colors and coat markings", prompt)
+        self.assertNotIn("Preserve the identity, shape, pose", prompt)
+
     def test_cloudflare_requires_server_side_credentials(self):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(views.ImageUnavailableError):
@@ -1104,6 +1142,46 @@ class ImageGenerationTests(TestCase):
         self.assertIn("Preserve the cat completely and exactly", payload["prompt"])
         with views.Image.open(io.BytesIO(base64.b64decode(edited_url.split(",", 1)[1]))) as edited:
             self.assertEqual(edited.size, source.size)
+
+    def test_cloudflare_inpainting_pose_change_preserves_coat_markings(self):
+        source = views.Image.new("RGB", (32, 32), "orange")
+        source_buffer = io.BytesIO()
+        source.save(source_buffer, format="PNG")
+        mask = views.Image.new("L", source.size, 255)
+        mask_buffer = io.BytesIO()
+        mask.save(mask_buffer, format="PNG")
+        output_buffer = io.BytesIO()
+        source.save(output_buffer, format="PNG")
+        response = Mock()
+        response.status_code = 200
+        response.headers = {"Content-Type": "image/png"}
+        response.content = output_buffer.getvalue()
+        source_image = {
+            "mime_type": "image/png",
+            "data": base64.b64encode(source_buffer.getvalue()).decode("ascii"),
+        }
+        selection_mask = {
+            "mime_type": "image/png",
+            "data": base64.b64encode(mask_buffer.getvalue()).decode("ascii"),
+        }
+
+        with patch.dict(os.environ, {
+            "CLOUDFLARE_ACCOUNT_ID": "account-id",
+            "CLOUDFLARE_API_TOKEN": "private-token",
+        }), patch("dashboard.views.requests.post", return_value=response) as post:
+            views.generate_image_with_cloudflare(
+                views._image_edit_instruction(
+                    "Bu kediyi oturur bir pozisyonda istiyorum"
+                ),
+                source_image,
+                selection_mask,
+            )
+
+        payload = post.call_args.kwargs["json"]
+        self.assertIn("pose as requested instead of preserving its original pose", payload["prompt"])
+        self.assertIn("distinctive fur colors and coat markings", payload["prompt"])
+        self.assertIn("changed coat pattern", payload["negative_prompt"])
+        self.assertIn("changed fur color", payload["negative_prompt"])
 
     def test_cloudflare_inpainting_503_falls_back_to_sdxl_lightning(self):
         source = views.Image.new("RGB", (8, 4), "orange")
