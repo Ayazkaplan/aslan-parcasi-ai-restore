@@ -3057,7 +3057,7 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
   api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
   if not account_id or not api_token:
     raise ImageUnavailableError(
-        "Görsel üretimi henüz yapılandırılmadı. Cloudflare hesap bilgileri sunucuda eksik."
+        "Görsel hizmeti şu anda kullanılamıyor. Lütfen biraz sonra yeniden dene."
     )
   model = (
       CLOUDFLARE_IMAGE_INPAINT_MODEL
@@ -3284,7 +3284,7 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
       raise UpstreamHTTPError(response.status_code, error_detail or "Cloudflare request rejected")
     content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
     if content_type != "image/png" or not response.content:
-      raise ValueError("Cloudflare yanıtında geçerli PNG görseli bulunamadı.")
+      raise ValueError("Görsel hizmetinden geçerli bir görsel alınamadı.")
     image_bytes = response.content
     mime_type = "image/png"
     if not image_bytes:
@@ -3293,18 +3293,25 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
     return f"data:{mime_type};base64,{encoded_image}"
   except UpstreamHTTPError as error:
     if error.status_code in (401, 403):
+      logger.error(
+          "Cloudflare image model %s rejected server credentials (HTTP %s)",
+          model,
+          error.status_code,
+      )
       raise ImageUnavailableError(
-          "Cloudflare görsel erişimi reddetti. Render'daki CLOUDFLARE_API_TOKEN "
-          "değerini ve token'ın doğru hesap için Workers AI çalıştırma iznini kontrol et."
+          "Görsel hizmetine şu anda ulaşılamıyor. Biraz sonra yeniden dene; "
+          "sorun devam ederse destek ekibimize bildir."
       ) from error
     logger.warning("Cloudflare image model %s failed: %s", model, error)
     raise ImageUnavailableError(
-        "Cloudflare görsel servisi şu anda görsel üretemedi. Biraz sonra tekrar dene."
+        "Görsel şu anda hazırlanamadı. İsteğin ve seçimin korunuyor; "
+        "biraz sonra yeniden deneyebilirsin."
     ) from error
   except Exception as error:
     logger.warning("Cloudflare image model %s failed: %s", model, error)
     raise ImageUnavailableError(
-        "Cloudflare görsel servisi şu anda görsel üretemedi. Biraz sonra tekrar dene."
+        "Görsel şu anda hazırlanamadı. İsteğin ve seçimin korunuyor; "
+        "biraz sonra yeniden deneyebilirsin."
     ) from error
 
 

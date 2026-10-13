@@ -3211,9 +3211,9 @@
                 }),
                 signal: imageRequestController.signal
             });
-            const data = await response.json();
+            const data = await response.json().catch(() => ({}));
             if (!response.ok || data.status !== 'success' || !data.image_url) {
-                throw new Error(data.error || `Görsel düzenlenemedi (HTTP ${response.status}).`);
+                throw new Error(data.error || 'İsteğin ve seçimin korunuyor; biraz sonra yeniden deneyebilirsin.');
             }
 
             const brandedImage = await addGeneratedImageBranding(data.image_url);
@@ -3235,7 +3235,9 @@
                 sender: 'ai',
                 text: error.name === 'AbortError'
                     ? 'Görsel düzenleme durduruldu.'
-                    : `Görsel düzenleme başarısız: ${error.message}`,
+                    : error instanceof TypeError
+                        ? 'Bağlantı kurulamadı. İnternet bağlantını kontrol edip yeniden deneyebilirsin.'
+                        : `Düzenleme tamamlanamadı. ${error.message || 'Lütfen biraz sonra yeniden dene.'}`,
                 timestamp: Date.now()
             });
         } finally {
@@ -3322,7 +3324,7 @@
                 signal: imageRequestController.signal
             });
 
-            const data = await response.json();
+            const data = await response.json().catch(() => ({}));
 
             if (data.status === 'success' && data.image_url) {
                 const brandedImage = await addGeneratedImageBranding(data.image_url);
@@ -3340,7 +3342,9 @@
             } else {
                 finishPlaceholder({
                     sender: 'ai',
-                    text: 'Görsel oluşturma başarısız: ' + (data.error || 'Bilinmeyen hata'),
+                    text: 'Görsel şu anda hazırlanamadı. ' + (
+                        data.error || 'İsteğin korunuyor; biraz sonra yeniden deneyebilirsin.'
+                    ),
                     timestamp: Date.now()
                 });
             }
@@ -3351,7 +3355,9 @@
             }
             finishPlaceholder({
                 sender: 'ai',
-                text: 'Görsel oluşturma sırasında hata oluştu: ' + err.message,
+                text: err instanceof TypeError
+                    ? 'Bağlantı kurulamadı. İnternet bağlantını kontrol edip yeniden deneyebilirsin.'
+                    : 'Görsel şu anda hazırlanamadı. İsteğin korunuyor; biraz sonra yeniden deneyebilirsin.',
                 timestamp: Date.now()
             });
         } finally {

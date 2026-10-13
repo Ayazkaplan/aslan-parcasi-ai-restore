@@ -977,7 +977,7 @@ class ImageGenerationTests(TestCase):
 
         self.assertTrue(any("Invalid image input" in message for message in logs.output))
 
-    def test_cloudflare_authentication_errors_explain_which_server_setting_to_check(self):
+    def test_cloudflare_authentication_errors_are_user_friendly_and_logged(self):
         response = Mock()
         response.status_code = 401
         response.text = (
@@ -987,12 +987,37 @@ class ImageGenerationTests(TestCase):
         with patch.dict(os.environ, {
             "CLOUDFLARE_ACCOUNT_ID": "account-id",
             "CLOUDFLARE_API_TOKEN": "private-token",
-        }), patch("dashboard.views.requests.post", return_value=response):
-            with self.assertRaisesRegex(
-                views.ImageUnavailableError,
-                "CLOUDFLARE_API_TOKEN.*Workers AI",
-            ):
+        }), patch("dashboard.views.requests.post", return_value=response), self.assertLogs(
+            "dashboard.views",
+            level="ERROR",
+        ) as logs:
+            with self.assertRaises(views.ImageUnavailableError) as context:
                 views.generate_image_with_cloudflare("A red mousepad")
+
+        self.assertNotIn("CLOUDFLARE_API_TOKEN", str(context.exception))
+        self.assertNotIn("Workers AI", str(context.exception))
+        self.assertIn("Biraz sonra yeniden dene", str(context.exception))
+        self.assertTrue(any("rejected server credentials" in message for message in logs.output))
+
+    def test_cloudflare_provider_failure_does_not_expose_provider_details(self):
+        response = Mock()
+        response.status_code = 400
+        response.json.return_value = {
+            "errors": [{"message": "Internal provider diagnostic"}],
+        }
+        with patch.dict(os.environ, {
+            "CLOUDFLARE_ACCOUNT_ID": "account-id",
+            "CLOUDFLARE_API_TOKEN": "private-token",
+        }), patch("dashboard.views.requests.post", return_value=response), self.assertLogs(
+            "dashboard.views",
+            level="WARNING",
+        ) as logs:
+            with self.assertRaises(views.ImageUnavailableError) as context:
+                views.generate_image_with_cloudflare("A red mousepad")
+
+        self.assertNotIn("Internal provider diagnostic", str(context.exception))
+        self.assertIn("yeniden deneyebilirsin", str(context.exception))
+        self.assertTrue(any("Internal provider diagnostic" in message for message in logs.output))
 
     def test_cloudflare_full_subject_edit_allows_reframing_the_source(self):
         source = views.Image.new("RGB", (8, 4), "orange")
