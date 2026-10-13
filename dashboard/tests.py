@@ -1048,10 +1048,10 @@ class ImageGenerationTests(TestCase):
         self.assertNotIn("Keep the exact same subject", request_prompt)
 
     def test_cloudflare_brush_edit_uses_mask_aware_inpainting(self):
-        source = views.Image.new("RGB", (8, 4), "orange")
+        source = views.Image.new("RGB", (355, 767), "orange")
         source_buffer = io.BytesIO()
         source.save(source_buffer, format="PNG")
-        mask = views.Image.new("L", (8, 4), 0)
+        mask = views.Image.new("L", (355, 767), 0)
         for x in range(4):
             for y in range(4):
                 mask.putpixel((x, y), 255)
@@ -1089,15 +1089,17 @@ class ImageGenerationTests(TestCase):
             "Bearer private-token",
         )
         payload = post.call_args.kwargs["json"]
-        self.assertEqual((payload["width"], payload["height"]), (512, 256))
+        self.assertEqual((payload["width"], payload["height"]), (360, 768))
+        self.assertEqual(payload["width"] % 8, 0)
+        self.assertEqual(payload["height"] % 8, 0)
         with views.Image.open(io.BytesIO(bytes(payload["mask"]))) as encoded_mask:
             sent_mask = encoded_mask.convert("L")
             self.assertEqual(
                 sent_mask.size,
                 (payload["width"], payload["height"]),
             )
-            self.assertGreater(sent_mask.getpixel((32, 100)), 0)
-            self.assertEqual(sent_mask.getpixel((500, 100)), 0)
+            self.assertGreater(sent_mask.getpixel((2, 1)), 0)
+            self.assertEqual(sent_mask.getpixel((350, 1)), 0)
         self.assertIn("Change only the background", payload["prompt"])
         self.assertIn("Preserve the cat completely and exactly", payload["prompt"])
         with views.Image.open(io.BytesIO(base64.b64decode(edited_url.split(",", 1)[1]))) as edited:

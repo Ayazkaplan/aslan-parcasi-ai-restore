@@ -3019,7 +3019,10 @@ def _prepare_inpainting_frame(image, mask):
   )
   resized_image = image.resize(resized_size, Image.Resampling.LANCZOS)
   resized_mask = mask.resize(resized_size, Image.Resampling.LANCZOS)
-  frame_size = (max(256, resized_size[0]), max(256, resized_size[1]))
+  frame_size = tuple(
+      ((max(256, dimension) + 7) // 8) * 8
+      for dimension in resized_size
+  )
   offset = (
       (frame_size[0] - resized_size[0]) // 2,
       (frame_size[1] - resized_size[1]) // 2,
