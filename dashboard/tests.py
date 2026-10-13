@@ -875,6 +875,9 @@ class ImageGenerationTests(TestCase):
         self.assertIn("Full-body animal photograph of the entire cat", prompt)
         self.assertIn("all legs and paws", prompt)
         self.assertIn("never crop to the face, head", prompt)
+        self.assertIn("natural candid three-quarter pose", prompt)
+        self.assertIn("single tail must emerge and curve on one side only", prompt)
+        self.assertIn("never mirror or duplicate body parts", prompt)
         self.assertIn("full-frame camera", prompt)
         self.assertIn("subtle natural imperfections", prompt)
 
@@ -890,6 +893,14 @@ class ImageGenerationTests(TestCase):
         self.assertIn("the entire cat", prompt)
         self.assertIn("all legs, paws or hooves, and tail", prompt)
         self.assertIn("do not preserve a close-up crop", prompt)
+
+    def test_background_edit_instruction_protects_foreground_from_brush_spill(self):
+        prompt = views._image_edit_instruction("Kedinin arka planı bahçe olsun")
+
+        self.assertIn("Change only the background", prompt)
+        self.assertIn("Preserve the cat completely and exactly", prompt)
+        self.assertIn("even where the rough brush selection overlaps it", prompt)
+        self.assertIn("Requested background", prompt)
 
     def test_cloudflare_requires_server_side_credentials(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -955,6 +966,55 @@ class ImageGenerationTests(TestCase):
         self.assertIn("the entire cat", request_prompt)
         self.assertIn("do not preserve a close-up crop", request_prompt)
         self.assertNotIn("Keep the exact same subject", request_prompt)
+
+    def test_cloudflare_brush_edit_uses_mask_aware_inpainting(self):
+        source = views.Image.new("RGB", (8, 4), "orange")
+        source_buffer = io.BytesIO()
+        source.save(source_buffer, format="PNG")
+        mask = views.Image.new("L", (8, 4), 0)
+        for x in range(4):
+            for y in range(4):
+                mask.putpixel((x, y), 255)
+        mask_buffer = io.BytesIO()
+        mask.save(mask_buffer, format="PNG")
+        output = views.Image.new("RGB", (256, 256), "green")
+        output_buffer = io.BytesIO()
+        output.save(output_buffer, format="PNG")
+        response = Mock()
+        response.status_code = 200
+        response.headers = {"Content-Type": "image/png"}
+        response.content = output_buffer.getvalue()
+        source_image = {
+            "mime_type": "image/png",
+            "data": base64.b64encode(source_buffer.getvalue()).decode("ascii"),
+        }
+        selection_mask = {
+            "mime_type": "image/png",
+            "data": base64.b64encode(mask_buffer.getvalue()).decode("ascii"),
+        }
+
+        with patch.dict(os.environ, {
+            "CLOUDFLARE_ACCOUNT_ID": "account-id",
+            "CLOUDFLARE_API_TOKEN": "private-token",
+        }), patch("dashboard.views.requests.post", return_value=response) as post:
+            edited_url = views.generate_image_with_cloudflare(
+                "Kedinin arka planı bahçe olsun",
+                source_image,
+                selection_mask,
+            )
+
+        self.assertIn(views.CLOUDFLARE_IMAGE_INPAINT_MODEL, post.call_args.args[0])
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual((payload["width"], payload["height"]), (512, 256))
+        encoded_mask = bytes(payload["mask"])
+        with views.Image.open(io.BytesIO(encoded_mask)) as sent_mask:
+            self.assertEqual(sent_mask.size, (512, 256))
+            self.assertGreater(sent_mask.getpixel((32, 100)), 0)
+            self.assertEqual(sent_mask.getpixel((500, 100)), 0)
+        self.assertIn("Change only the background", payload["prompt"])
+        self.assertIn("Preserve the cat completely and exactly", payload["prompt"])
+        with views.Image.open(io.BytesIO(base64.b64decode(edited_url.split(",", 1)[1]))) as edited:
+            self.assertEqual(edited.size, source.size)
 
     def test_generated_image_displays_with_aslan_parcasi_branding(self):
         template_path = Path(__file__).parent / "templates" / "dashboard" / "index.html"
@@ -1102,6 +1162,47 @@ class ImageGenerationTests(TestCase):
         usage = ImageDailyUsage.objects.get(user=self.user)
         self.assertEqual(usage.successful_count, 0)
         self.assertEqual(usage.pending_count, 0)
+
+    def test_brush_edit_softens_selection_edge_but_preserves_pixels_outside(self):
+        source = views.Image.new("RGB", (128, 128), "orange")
+        source_buffer = io.BytesIO()
+        source.save(source_buffer, format="PNG")
+        mask = views.Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+        for x in range(32, 96):
+            for y in range(32, 96):
+                mask.putpixel((x, y), (255, 255, 255, 255))
+        mask_buffer = io.BytesIO()
+        mask.save(mask_buffer, format="PNG")
+        edited = views.Image.new("RGB", (128, 128), "green")
+        edited_buffer = io.BytesIO()
+        edited.save(edited_buffer, format="PNG")
+        to_data_url = lambda image: "data:image/png;base64," + base64.b64encode(
+            image.getvalue()
+        ).decode("ascii")
+
+        with patch(
+            "dashboard.views.generate_image_with_cloudflare",
+            return_value=to_data_url(edited_buffer),
+        ):
+            response = self.client.post(
+                reverse("api_image_generate"),
+                data=json.dumps({
+                    "prompt": "Kedinin arka planı bahçe olsun",
+                    "source_image": to_data_url(source_buffer),
+                    "selection_mask": to_data_url(mask_buffer),
+                }),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        edited_bytes = base64.b64decode(response.json()["image_url"].split(",", 1)[1])
+        with views.Image.open(io.BytesIO(edited_bytes)) as result:
+            source_pixel = (*source.getpixel((31, 64)), 255)
+            self.assertEqual(result.getpixel((31, 64)), source_pixel)
+            self.assertEqual(result.getpixel((64, 64)), (0, 128, 0, 255))
+            edge = result.getpixel((32, 64))
+            self.assertNotEqual(edge, (*source.getpixel((32, 64)), 255))
+            self.assertNotEqual(edge, (0, 128, 0, 255))
 
     def test_meaningless_image_prompt_returns_actionable_error(self):
         with patch("dashboard.views.generate_image_with_cloudflare") as generate:

@@ -12,7 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 import requests
-from PIL import Image, ImageOps
+from PIL import Image, ImageChops, ImageFilter, ImageOps
 from collections import namedtuple
 from html import unescape
 from urllib.parse import parse_qs, quote, unquote, urlparse
@@ -50,6 +50,7 @@ IMAGE_REQUEST_MIN_INTERVAL = 8
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_FAST_MODEL = "gemini-2.5-flash-lite"
 CLOUDFLARE_IMAGE_EDIT_MODEL = "@cf/black-forest-labs/flux-2-klein-4b"
+CLOUDFLARE_IMAGE_INPAINT_MODEL = "@cf/runwayml/stable-diffusion-v1-5-inpainting"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 REASONING_MARKER = "\x00R\x00"
 
@@ -522,7 +523,12 @@ def enhance_image_prompt(prompt):
           "complete head, torso, all legs and paws or hooves, and tail fully inside "
           "the frame. Keep the animal small enough to fit, centered with visible ground "
           "and generous space around it. Use a pulled-back full shot, not a portrait; "
-          "never crop to the face, head, or cut off any part of the animal"
+          "never crop to the face, head, or cut off any part of the animal. Capture a "
+          "natural candid three-quarter pose, body slightly turned, head gently tilted, "
+          "one forepaw slightly ahead, gaze just off-camera, and relaxed uneven weight "
+          "distribution; avoid a front-facing symmetrical pose. The single tail must "
+          "emerge and curve on one side only. Keep anatomy natural and asymmetric: "
+          "exactly one tail and four legs, never mirror or duplicate body parts"
       )
     else:
       framing_direction = (
@@ -2896,9 +2902,15 @@ def generate_masked_image_edit(prompt, source_image, selection_mask):
       "shape, pose, perspective, lighting, and all surrounding details that the request "
       "does not ask to change. Do not add unrelated objects, text, or styling."
   )
+  mask_buffer = io.BytesIO()
+  mask.crop(crop_bounds).save(mask_buffer, format="PNG")
   generated_url = generate_image_with_cloudflare(
       edit_prompt,
       {"mime_type": "image/png", "data": crop_data},
+      {
+          "mime_type": "image/png",
+          "data": base64.b64encode(mask_buffer.getvalue()).decode("ascii"),
+      },
   )
   try:
     generated = parse_image_data_url(generated_url)
@@ -2917,7 +2929,12 @@ def generate_masked_image_edit(prompt, source_image, selection_mask):
         method=Image.Resampling.LANCZOS,
     )
   result = source.copy()
-  result.paste(generated_crop, crop_bounds, mask.crop(crop_bounds))
+  composite_mask = mask.crop(crop_bounds)
+  if min(source_crop.size) >= 64:
+    feather_radius = max(2, min(12, round(max(source_crop.size) * 0.008)))
+    softened_mask = composite_mask.filter(ImageFilter.GaussianBlur(feather_radius))
+    composite_mask = ImageChops.darker(composite_mask, softened_mask)
+  result.paste(generated_crop, crop_bounds, composite_mask)
   result.putalpha(source_alpha)
   output = io.BytesIO()
   result.save(output, format="PNG", optimize=True)
@@ -2928,6 +2945,22 @@ def generate_masked_image_edit(prompt, source_image, selection_mask):
 def _image_edit_instruction(prompt):
   text = (prompt or "").strip()
   subject = _animal_subject(text)
+
+  if re.search(
+      r"\b(?:arka\s*plan\w*|arkaplan\w*|background\w*|backdrop\w*|fon\w*)\b",
+      text,
+      re.IGNORECASE,
+  ):
+    subject_description = f"the {subject}" if subject else "the existing foreground subject"
+    return (
+        f"Change only the background to match the requested scene. Preserve "
+        f"{subject_description} completely and exactly as in the source photo, including "
+        "its full silhouette, face, fur, whiskers, pose, edges, size, lighting, and "
+        "all foreground details. Do not repaint, erase, duplicate, reshape, or replace "
+        "any part of the foreground subject, even where the rough brush selection "
+        "overlaps it. Make a natural, seamless background transition. "
+        f"Requested background: {text}"
+    )
 
   if _requests_full_subject(text):
     subject_description = (
@@ -2963,8 +2996,51 @@ def _image_edit_instruction(prompt):
   return text
 
 
-def generate_image_with_cloudflare(prompt, source_image=None):
-  """Generate with SDXL-Lightning or edit with Cloudflare's DreamShaper img2img model."""
+def _prepare_inpainting_frame(image, mask):
+  scale = min(
+      1024 / max(image.size),
+      max(1.0, 256 / min(image.size)),
+  )
+  resized_size = (
+      max(1, round(image.width * scale)),
+      max(1, round(image.height * scale)),
+  )
+  resized_image = image.resize(resized_size, Image.Resampling.LANCZOS)
+  resized_mask = mask.resize(resized_size, Image.Resampling.LANCZOS)
+  frame_size = (max(256, resized_size[0]), max(256, resized_size[1]))
+  offset = (
+      (frame_size[0] - resized_size[0]) // 2,
+      (frame_size[1] - resized_size[1]) // 2,
+  )
+  frame = Image.new("RGB", frame_size, "black")
+  frame.paste(resized_image, offset)
+  framed_mask = Image.new("L", frame_size, 0)
+  framed_mask.paste(resized_mask, offset)
+  return frame, framed_mask, (offset, resized_size, image.size, frame_size)
+
+
+def _restore_inpainting_frame(image_bytes, geometry):
+  offset, resized_size, source_size, frame_size = geometry
+  with Image.open(io.BytesIO(image_bytes)) as generated_file:
+    generated_frame = ImageOps.fit(
+        ImageOps.exif_transpose(generated_file).convert("RGB"),
+        frame_size,
+        method=Image.Resampling.LANCZOS,
+    )
+  generated_crop = generated_frame.crop((
+      offset[0],
+      offset[1],
+      offset[0] + resized_size[0],
+      offset[1] + resized_size[1],
+  ))
+  generated_crop = generated_crop.resize(source_size, Image.Resampling.LANCZOS)
+  output_buffer = io.BytesIO()
+  generated_crop.save(output_buffer, format="PNG")
+  return output_buffer.getvalue()
+
+
+def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=None):
+  """Generate images or use masked inpainting for brush-selected edits."""
   account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
   api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
   if not account_id or not api_token:
@@ -2972,7 +3048,9 @@ def generate_image_with_cloudflare(prompt, source_image=None):
         "Görsel üretimi henüz yapılandırılmadı. Cloudflare hesap bilgileri sunucuda eksik."
     )
   model = (
-      CLOUDFLARE_IMAGE_EDIT_MODEL
+      CLOUDFLARE_IMAGE_INPAINT_MODEL
+      if selection_mask
+      else CLOUDFLARE_IMAGE_EDIT_MODEL
       if source_image
       else "@cf/bytedance/stable-diffusion-xl-lightning"
   )
@@ -2982,7 +3060,13 @@ def generate_image_with_cloudflare(prompt, source_image=None):
   )
   try:
     if source_image:
+      inpainting_geometry = None
       full_subject_requested = _requests_full_subject(prompt)
+      background_edit_requested = bool(re.search(
+          r"\b(?:arka\s*plan\w*|arkaplan\w*|background\w*|backdrop\w*|fon\w*)\b",
+          prompt or "",
+          re.IGNORECASE,
+      ))
       request_prompt = (
           "Edit the supplied image. Apply only this change: "
           + _image_edit_instruction(prompt)
@@ -2992,9 +3076,16 @@ def generate_image_with_cloudflare(prompt, source_image=None):
               "the original crop, subject size, or pose if that prevents showing the "
               "whole subject. Leave unrequested scene details unchanged."
               if full_subject_requested
-              else " Keep the same subject, species, identity, face, pose, size, "
-              "composition, background, and lighting. Do not replace or reinterpret "
-              "the subject. Leave every other detail unchanged."
+              else (
+                  " The user requests a background-only change. Preserve the complete "
+                  "foreground subject, silhouette, fur, face, whiskers, pose, and size. "
+                  "The rough brush selection may overlap the subject; do not alter those "
+                  "foreground pixels. Blend the requested background naturally at its edge."
+                  if background_edit_requested
+                  else " Keep the same subject, species, identity, face, pose, size, "
+                  "composition, background, and lighting. Do not replace or reinterpret "
+                  "the subject. Leave every other detail unchanged."
+              )
           )
       )
       image_bytes = base64.b64decode(source_image["data"], validate=True)
@@ -3003,7 +3094,46 @@ def generate_image_with_cloudflare(prompt, source_image=None):
       scale = 1024 / max(source_width, source_height)
       width = max(256, round(source_width * scale))
       height = max(256, round(source_height * scale))
-      response = requests.post(
+      inpaint_response = None
+      if selection_mask:
+        mask_bytes = base64.b64decode(selection_mask["data"], validate=True)
+        with Image.open(io.BytesIO(mask_bytes)) as mask_file:
+          inpaint_mask = mask_file.convert("L")
+        with Image.open(io.BytesIO(image_bytes)) as source_file:
+          inpaint_source = ImageOps.exif_transpose(source_file).convert("RGB")
+        if inpaint_mask.size != inpaint_source.size:
+          raise ValueError("Fırça seçimi ile kaynak görselin boyutları uyuşmuyor.")
+        inpaint_image, framed_mask, inpainting_geometry = _prepare_inpainting_frame(
+            inpaint_source,
+            inpaint_mask,
+        )
+        image_buffer = io.BytesIO()
+        inpaint_image.save(image_buffer, format="PNG")
+        inpaint_mask_buffer = io.BytesIO()
+        framed_mask.save(inpaint_mask_buffer, format="PNG")
+        inpaint_response = requests.post(
+            endpoint,
+            headers={
+                "Authorization": f"******",
+                "Content-Type": "application/json",
+            },
+            json={
+                "prompt": request_prompt,
+                "negative_prompt": (
+                    "changed foreground subject, damaged silhouette, extra limbs, "
+                    "duplicate tail, mirrored anatomy, hard cutout edge"
+                ),
+                "image_b64": base64.b64encode(image_buffer.getvalue()).decode("ascii"),
+                "mask": list(inpaint_mask_buffer.getvalue()),
+                "width": inpaint_image.width,
+                "height": inpaint_image.height,
+                "num_steps": 20,
+                "strength": 0.85,
+                "guidance": 7.5,
+            },
+            timeout=120,
+        )
+      response = inpaint_response if selection_mask else requests.post(
           endpoint,
           headers={"Authorization": f"Bearer {api_token}"},
           data={
@@ -3034,7 +3164,14 @@ def generate_image_with_cloudflare(prompt, source_image=None):
         )
       content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
       if content_type.startswith("image/") and response.content:
-        encoded_image = base64.b64encode(response.content).decode("ascii")
+        output_image_bytes = response.content
+        if inpainting_geometry:
+          output_image_bytes = _restore_inpainting_frame(
+              output_image_bytes,
+              inpainting_geometry,
+          )
+          content_type = "image/png"
+        encoded_image = base64.b64encode(output_image_bytes).decode("ascii")
         return f"data:{content_type};base64,{encoded_image}"
       payload = response.json()
       result = payload.get("result") if isinstance(payload, dict) else None
@@ -3061,6 +3198,10 @@ def generate_image_with_cloudflare(prompt, source_image=None):
       image_bytes = base64.b64decode(encoded_image, validate=True)
       if not image_bytes:
         raise ValueError("Cloudflare boş görsel dosyası döndürdü.")
+      if inpainting_geometry:
+        image_bytes = _restore_inpainting_frame(image_bytes, inpainting_geometry)
+        mime_type = "image/png"
+        encoded_image = base64.b64encode(image_bytes).decode("ascii")
       return f"data:{mime_type};base64,{encoded_image}"
 
     payload = {"prompt": enhance_image_prompt(prompt), "num_steps": 4}
@@ -4042,7 +4183,7 @@ def api_debug(request):
           "normal": GEMINI_MODEL,
           "fast": GEMINI_FAST_MODEL,
           "image": "@cf/bytedance/stable-diffusion-xl-lightning",
-          "image_edit": CLOUDFLARE_IMAGE_EDIT_MODEL,
+          "image_edit": CLOUDFLARE_IMAGE_INPAINT_MODEL,
       },
       "chat_priority": [
           f"{endpoint.provider}:{endpoint.models[0]}"
