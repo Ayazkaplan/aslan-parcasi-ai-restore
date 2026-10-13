@@ -51,7 +51,7 @@ GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_FAST_MODEL = "gemini-2.5-flash-lite"
 CLOUDFLARE_IMAGE_EDIT_MODEL = "@cf/black-forest-labs/flux-2-klein-4b"
 CLOUDFLARE_IMAGE_INPAINT_MODEL = "@cf/runwayml/stable-diffusion-v1-5-inpainting"
-CLOUDFLARE_IMAGE_MODEL = "@cf/stabilityai/stable-diffusion-xl-base-1.0"
+CLOUDFLARE_IMAGE_MODEL = "@cf/bytedance/stable-diffusion-xl-lightning"
 CLOUDFLARE_IMAGE_INPAINT_FALLBACK_MODEL = CLOUDFLARE_IMAGE_MODEL
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 REASONING_MARKER = "\x00R\x00"
@@ -3241,7 +3241,7 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
     )
     payload = {
         "prompt": enhance_image_prompt(prompt),
-        "num_steps": 20,
+        "num_steps": 4,
     }
     if animal_full_body:
       payload.update({

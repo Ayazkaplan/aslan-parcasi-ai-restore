@@ -835,7 +835,7 @@ class ImageGenerationTests(TestCase):
         generate.assert_called_once_with(prompt)
         self.assertEqual(views.image_usage_today(self.user.pk), 1)
 
-    def test_cloudflare_sdxl_base_receives_prompt_and_returns_png(self):
+    def test_cloudflare_sdxl_lightning_receives_prompt_and_returns_png(self):
         response = Mock()
         response.status_code = 200
         response.headers = {"Content-Type": "image/png"}
@@ -854,7 +854,7 @@ class ImageGenerationTests(TestCase):
         self.assertIn(views.CLOUDFLARE_IMAGE_MODEL, post.call_args.args[0])
         self.assertEqual(post.call_args.kwargs["json"], {
             "prompt": views.enhance_image_prompt("Photorealistic red mousepad"),
-            "num_steps": 20,
+            "num_steps": 4,
         })
         self.assertIn("carefully art-directed", post.call_args.kwargs["json"]["prompt"])
         self.assertEqual(
@@ -903,7 +903,7 @@ class ImageGenerationTests(TestCase):
 
         payload = post.call_args.kwargs["json"]
         self.assertEqual((payload["width"], payload["height"]), (1024, 768))
-        self.assertEqual(payload["num_steps"], 20)
+        self.assertEqual(payload["num_steps"], 4)
         self.assertIn("close-up", payload["negative_prompt"])
         self.assertIn("duplicate tail", payload["negative_prompt"])
         self.assertIn("Full-body animal photograph", payload["prompt"])
@@ -1054,7 +1054,7 @@ class ImageGenerationTests(TestCase):
         with views.Image.open(io.BytesIO(base64.b64decode(edited_url.split(",", 1)[1]))) as edited:
             self.assertEqual(edited.size, source.size)
 
-    def test_cloudflare_inpainting_503_falls_back_to_free_sdxl_base(self):
+    def test_cloudflare_inpainting_503_falls_back_to_sdxl_lightning(self):
         source = views.Image.new("RGB", (8, 4), "orange")
         source_buffer = io.BytesIO()
         source.save(source_buffer, format="PNG")
