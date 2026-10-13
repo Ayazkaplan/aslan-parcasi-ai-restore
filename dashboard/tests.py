@@ -977,6 +977,23 @@ class ImageGenerationTests(TestCase):
 
         self.assertTrue(any("Invalid image input" in message for message in logs.output))
 
+    def test_cloudflare_authentication_errors_explain_which_server_setting_to_check(self):
+        response = Mock()
+        response.status_code = 401
+        response.text = (
+            '{"success":false,"errors":[{"code":10000,'
+            '"message":"Authentication error"}]}'
+        )
+        with patch.dict(os.environ, {
+            "CLOUDFLARE_ACCOUNT_ID": "account-id",
+            "CLOUDFLARE_API_TOKEN": "private-token",
+        }), patch("dashboard.views.requests.post", return_value=response):
+            with self.assertRaisesRegex(
+                views.ImageUnavailableError,
+                "CLOUDFLARE_API_TOKEN.*Workers AI",
+            ):
+                views.generate_image_with_cloudflare("A red mousepad")
+
     def test_cloudflare_full_subject_edit_allows_reframing_the_source(self):
         source = views.Image.new("RGB", (8, 4), "orange")
         source_buffer = io.BytesIO()

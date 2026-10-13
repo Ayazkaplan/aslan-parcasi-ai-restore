@@ -14,7 +14,7 @@ python manage.py runserver 0.0.0.0:5000
 - `SESSION_SECRET`: Oturumların kod güncellemeleri ve yeniden başlatmalar arasında korunması için sabit Django gizli anahtarı.
 - `DATABASE_URL`: Kullanıcılar, oturumlar, profiller ve sohbet geçmişleri için kalıcı PostgreSQL bağlantısı. Tanımlı değilse yalnızca yerel geliştirme için SQLite kullanılır.
 - `GEMINI_API_KEY`: Gemini kullanan sohbet/algılama özellikleri için API anahtarı.
-- `CLOUDFLARE_ACCOUNT_ID` ve `CLOUDFLARE_API_TOKEN`: Yeni görselleri Workers AI SDXL-Lightning ile üretmek için; API token'ını yalnızca sunucu ortam değişkeni olarak tanımlayın.
+- `CLOUDFLARE_ACCOUNT_ID` ve `CLOUDFLARE_API_TOKEN`: Yeni görselleri Workers AI SDXL-Lightning ile üretmek için; özel token `Workers AI - Read` ve `Workers AI - Edit` izinlerine sahip olmalı ve yalnızca sunucu ortam değişkeni olarak tanımlanmalıdır.
 
 Kullanıcı adı, profil fotoğrafı, tema ve arka plan deseni `UserProfile` tablosunda saklanır; bu ayarlar tarayıcı veya cihaz değişse de hesaba bağlı kalır.
 Sohbet geçmişleri `ChatHistory` tablosunda kullanıcı hesabına bağlı saklanır; aynı hesapla açılan cihazlar sohbetleri ve profil ayarlarını sunucudan senkronize eder.

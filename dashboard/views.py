@@ -3289,6 +3289,16 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
       raise ValueError("Cloudflare boş görsel dosyası döndürdü.")
     encoded_image = base64.b64encode(image_bytes).decode("ascii")
     return f"data:{mime_type};base64,{encoded_image}"
+  except UpstreamHTTPError as error:
+    if error.status_code in (401, 403):
+      raise ImageUnavailableError(
+          "Cloudflare görsel erişimi reddetti. Render'daki CLOUDFLARE_API_TOKEN "
+          "değerini ve token'ın doğru hesap için Workers AI çalıştırma iznini kontrol et."
+      ) from error
+    logger.warning("Cloudflare image model %s failed: %s", model, error)
+    raise ImageUnavailableError(
+        "Cloudflare görsel servisi şu anda görsel üretemedi. Biraz sonra tekrar dene."
+    ) from error
   except Exception as error:
     logger.warning("Cloudflare image model %s failed: %s", model, error)
     raise ImageUnavailableError(
