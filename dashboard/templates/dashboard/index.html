@@ -2368,13 +2368,21 @@
         } else {
             const msgs = currentChat.messages;
             msgs.forEach((msg, idx) => {
-                appendMessage(msg.text, msg.sender, false, true, idx, msg);
+                appendMessage(messageTextForDisplay(msg.text), msg.sender, false, true, idx, msg);
             });
         }
         if (typingEl) {
             messagesEl.appendChild(typingEl);
         }
         scrollMessagesToBottom();
+    }
+
+    function messageTextForDisplay(text) {
+        if (typeof text === 'string' &&
+            /^Görsel (?:düzenleme|oluşturma) başarısız: Cloudflare\b/i.test(text)) {
+            return 'Görsel şu anda tamamlanamadı. İsteğin ve seçimin korunuyor; biraz sonra yeniden deneyebilirsin.';
+        }
+        return text;
     }
 
     function deleteMessagePair(msgIndex) {

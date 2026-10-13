@@ -1172,6 +1172,11 @@ class ImageGenerationTests(TestCase):
         template_path = Path(__file__).parent / "templates" / "dashboard" / "index.html"
         template = template_path.read_text(encoding="utf-8")
 
+        self.assertIn("messageTextForDisplay(msg.text)", template)
+        self.assertIn(
+            "/^Görsel (?:düzenleme|oluşturma) başarısız: Cloudflare\\b/i",
+            template,
+        )
         self.assertIn("Bu fotoğrafı düzenlemeye devam et", template)
         self.assertIn("source_image: editing.sourceImage", template)
         self.assertIn("source_url: data.image_url", template)
