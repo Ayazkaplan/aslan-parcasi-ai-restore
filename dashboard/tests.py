@@ -874,8 +874,9 @@ class ImageGenerationTests(TestCase):
 
         self.assertIn("Full-body animal photograph of the entire cat", prompt)
         self.assertIn("every leg and paw", prompt)
-        self.assertIn("show all four legs distinctly", prompt)
+        self.assertIn("show exactly four distinct legs", prompt)
         self.assertIn("both front legs and both hind legs", prompt)
+        self.assertIn("a clear gap between the legs", prompt)
         self.assertIn("never a portrait, headshot, or close-up", prompt)
         self.assertIn("natural candid three-quarter pose", prompt)
         self.assertIn("single tail must emerge and curve on one side only", prompt)
