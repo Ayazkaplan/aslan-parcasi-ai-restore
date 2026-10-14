@@ -1515,6 +1515,23 @@ class ChatFeatureTests(TestCase):
         )
         self.client.force_login(self.user)
 
+    def test_chat_refresh_backs_off_after_rate_limit_responses(self):
+        template_path = Path(__file__).parent / "templates" / "dashboard" / "index.html"
+        template = template_path.read_text(encoding="utf-8")
+        refresh = template.split("async function refreshChatsFromServer()", 1)[1].split(
+            "function setMode(", 1
+        )[0]
+
+        self.assertIn("const CHAT_REFRESH_INITIAL_BACKOFF = 30000", template)
+        self.assertIn("const CHAT_REFRESH_MAX_BACKOFF = 300000", template)
+        self.assertIn("setInterval(refreshChatsFromServer, 30000)", template)
+        self.assertIn("response.headers.get('Retry-After')", template)
+        self.assertIn("chatRefreshRetryAt = Date.now() + Math.max(", template)
+        self.assertIn("Date.now() < chatRefreshRetryAt", refresh)
+        self.assertIn("if (!response.ok) {", refresh)
+        self.assertIn("noteChatRefreshFailure(response)", refresh)
+        self.assertIn("noteChatRefreshSuccess()", refresh)
+
     def test_chat_sends_extracted_file_text_not_an_opaque_file_part(self):
         content = "Bu dosyanın gizli cümlesi: deniz mavidir."
         encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")

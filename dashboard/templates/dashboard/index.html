@@ -1918,6 +1918,10 @@
     let serverSyncTimer = null;
     let serverSyncInFlight = false;
     let lastServerUpdateAt = 0;
+    let chatRefreshFailures = 0;
+    let chatRefreshRetryAt = 0;
+    const CHAT_REFRESH_INITIAL_BACKOFF = 30000;
+    const CHAT_REFRESH_MAX_BACKOFF = 300000;
 
     let userSettings = {
         username: DJANGO_USERNAME,
@@ -2130,7 +2134,44 @@
         serverSyncTimer = setTimeout(syncChatsToServer, 250);
     }
 
+    function noteChatRefreshFailure(response = null) {
+        chatRefreshFailures += 1;
+        const exponentialDelay = Math.min(
+            CHAT_REFRESH_MAX_BACKOFF,
+            CHAT_REFRESH_INITIAL_BACKOFF * (2 ** Math.min(chatRefreshFailures - 1, 4))
+        );
+        const retryAfter = response ? response.headers.get('Retry-After') : null;
+        const retryAfterSeconds = Number(retryAfter);
+        const retryAfterDate = Date.parse(retryAfter || '');
+        const retryAfterDelay = Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0
+            ? retryAfterSeconds * 1000
+            : Number.isFinite(retryAfterDate)
+                ? Math.max(0, retryAfterDate - Date.now())
+                : 0;
+        chatRefreshRetryAt = Date.now() + Math.max(
+            exponentialDelay,
+            Math.min(retryAfterDelay, CHAT_REFRESH_MAX_BACKOFF)
+        );
+    }
+
+    function noteChatRefreshSuccess() {
+        chatRefreshFailures = 0;
+        chatRefreshRetryAt = 0;
+    }
+
+    function scheduleChatSyncRetry() {
+        clearTimeout(serverSyncTimer);
+        serverSyncTimer = setTimeout(
+            syncChatsToServer,
+            Math.max(0, chatRefreshRetryAt - Date.now())
+        );
+    }
+
     async function syncChatsToServer() {
+        if (Date.now() < chatRefreshRetryAt) {
+            scheduleChatSyncRetry();
+            return;
+        }
         if (serverSyncInFlight) return;
         serverSyncInFlight = true;
         try {
@@ -2146,8 +2187,14 @@
             if (response.ok) {
                 const data = await response.json();
                 lastServerUpdateAt = Date.parse(data.updated_at || '') || Date.now();
+                noteChatRefreshSuccess();
+            } else {
+                noteChatRefreshFailure(response);
+                scheduleChatSyncRetry();
             }
         } catch (err) {
+            noteChatRefreshFailure();
+            scheduleChatSyncRetry();
             // Keep the local cache available if the device is temporarily offline.
         } finally {
             serverSyncInFlight = false;
@@ -2155,14 +2202,17 @@
     }
 
     async function loadChatsFromServer() {
+        let response = null;
         try {
-            const response = await fetch('{% url "api_chats" %}', { credentials: 'same-origin' });
+            response = await fetch('{% url "api_chats" %}', { credentials: 'same-origin' });
             if (!response.ok) throw new Error('Sohbetler alınamadı.');
             const data = await response.json();
+            noteChatRefreshSuccess();
             const remoteChats = Array.isArray(data.chats) ? data.chats : [];
             lastServerUpdateAt = Date.parse(data.updated_at || '') || 0;
             chats = remoteChats;
         } catch (err) {
+            noteChatRefreshFailure(response);
             // The existing local cache still lets the app open without a connection.
         }
         if (chats.length > 0) {
@@ -2173,11 +2223,19 @@
     }
 
     async function refreshChatsFromServer() {
-        if (serverSyncInFlight || Date.now() - localMutationAt < 3000) return;
+        if (
+            serverSyncInFlight
+            || Date.now() - localMutationAt < 3000
+            || Date.now() < chatRefreshRetryAt
+        ) return;
         try {
             const response = await fetch('{% url "api_chats" %}', { credentials: 'same-origin' });
-            if (!response.ok) return;
+            if (!response.ok) {
+                noteChatRefreshFailure(response);
+                return;
+            }
             const data = await response.json();
+            noteChatRefreshSuccess();
             const serverUpdatedAt = Date.parse(data.updated_at || '') || 0;
             if (serverUpdatedAt > lastServerUpdateAt && Array.isArray(data.chats)) {
                 chats = data.chats;
@@ -2191,6 +2249,7 @@
                 }
             }
         } catch (err) {
+            noteChatRefreshFailure();
             // Polling is best effort and must not interrupt a conversation.
         }
     }
@@ -3980,7 +4039,7 @@
     document.getElementById('thinkDurationLabel').textContent = formatThinkDuration(deepThinkSeconds);
     updateThinkButtonAvailability();
     loadChatsFromServer();
-    setInterval(refreshChatsFromServer, 6000);
+    setInterval(refreshChatsFromServer, 30000);
 </script>
 
 </body>
