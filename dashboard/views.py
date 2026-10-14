@@ -3113,9 +3113,12 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
     raise ImageUnavailableError(
         "Görsel hizmeti şu anda kullanılamıyor. Lütfen biraz sonra yeniden dene."
     )
+  use_masked_inpainting = bool(
+      selection_mask and not _requests_pose_change(prompt)
+  )
   model = (
       CLOUDFLARE_IMAGE_INPAINT_MODEL
-      if selection_mask
+      if use_masked_inpainting
       else CLOUDFLARE_IMAGE_EDIT_MODEL
       if source_image
       else CLOUDFLARE_IMAGE_MODEL
@@ -3169,7 +3172,7 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
       width = max(256, round(source_width * scale))
       height = max(256, round(source_height * scale))
       inpaint_response = None
-      if selection_mask:
+      if use_masked_inpainting:
         mask_bytes = base64.b64decode(selection_mask["data"], validate=True)
         with Image.open(io.BytesIO(mask_bytes)) as mask_file:
           inpaint_mask = mask_file.convert("L")
@@ -3226,7 +3229,7 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
               json=inpaint_payload,
               timeout=120,
           )
-      response = inpaint_response if selection_mask else requests.post(
+      response = inpaint_response if use_masked_inpainting else requests.post(
           endpoint,
           headers={"Authorization": f"Bearer {api_token}"},
           data={

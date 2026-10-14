@@ -1143,7 +1143,7 @@ class ImageGenerationTests(TestCase):
         with views.Image.open(io.BytesIO(base64.b64decode(edited_url.split(",", 1)[1]))) as edited:
             self.assertEqual(edited.size, source.size)
 
-    def test_cloudflare_inpainting_pose_change_preserves_coat_markings(self):
+    def test_cloudflare_pose_edit_uses_image_edit_model_with_local_masking(self):
         source = views.Image.new("RGB", (32, 32), "orange")
         source_buffer = io.BytesIO()
         source.save(source_buffer, format="PNG")
@@ -1177,11 +1177,13 @@ class ImageGenerationTests(TestCase):
                 selection_mask,
             )
 
-        payload = post.call_args.kwargs["json"]
-        self.assertIn("pose to sitting", payload["prompt"])
-        self.assertIn("recognizably the same animal", payload["prompt"])
-        self.assertNotIn("Bu kediyi oturur", payload["prompt"])
-        self.assertNotIn("changed coat pattern", payload["negative_prompt"])
+        self.assertIn(views.CLOUDFLARE_IMAGE_EDIT_MODEL, post.call_args.args[0])
+        request_prompt = post.call_args.kwargs["data"]["prompt"]
+        self.assertIn("pose to sitting", request_prompt)
+        self.assertIn("recognizably the same animal", request_prompt)
+        self.assertNotIn("Bu kediyi oturur", request_prompt)
+        self.assertIn("input_image_0", post.call_args.kwargs["files"])
+        self.assertNotIn("json", post.call_args.kwargs)
 
     def test_cloudflare_inpainting_503_falls_back_to_sdxl_lightning(self):
         source = views.Image.new("RGB", (8, 4), "orange")
