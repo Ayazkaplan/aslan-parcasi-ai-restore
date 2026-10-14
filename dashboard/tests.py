@@ -874,6 +874,8 @@ class ImageGenerationTests(TestCase):
 
         self.assertIn("Full-body animal photograph of the entire cat", prompt)
         self.assertIn("every leg and paw", prompt)
+        self.assertIn("show all four legs distinctly", prompt)
+        self.assertIn("both front legs and both hind legs", prompt)
         self.assertIn("never a portrait, headshot, or close-up", prompt)
         self.assertIn("natural candid three-quarter pose", prompt)
         self.assertIn("single tail must emerge and curve on one side only", prompt)
@@ -905,6 +907,8 @@ class ImageGenerationTests(TestCase):
         self.assertEqual((payload["width"], payload["height"]), (1024, 768))
         self.assertEqual(payload["num_steps"], 4)
         self.assertIn("close-up", payload["negative_prompt"])
+        self.assertIn("missing limb", payload["negative_prompt"])
+        self.assertIn("obscured leg", payload["negative_prompt"])
         self.assertIn("duplicate tail", payload["negative_prompt"])
         self.assertIn("Full-body animal photograph", payload["prompt"])
 

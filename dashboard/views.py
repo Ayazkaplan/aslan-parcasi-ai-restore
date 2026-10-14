@@ -555,6 +555,10 @@ def enhance_image_prompt(prompt):
           "Show its complete head, torso, every leg and paw or hoof, and the single "
           "tail fully inside the frame; the animal must occupy no more than 60 percent "
           "of the image height, with visible ground and generous space around it. "
+          "For four-legged animals, show all four legs distinctly, including both "
+          "front legs and both hind legs; keep every leg unobscured, correctly attached, "
+          "and naturally grounded, with visible separation instead of hiding one behind "
+          "the torso. "
           "Use an eye-level full shot, never a portrait, headshot, or close-up; do not "
           "crop or cut off any body part. Capture a natural candid three-quarter pose "
           "with the body slightly turned, one forepaw slightly ahead, gaze just off-camera, "
@@ -3311,8 +3315,10 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
     if animal_full_body:
       payload.update({
           "negative_prompt": (
-              "close-up, portrait, headshot, cropped animal, head only, cut off paws, "
-              "cut off tail, duplicate tail, extra limbs, mirrored symmetrical anatomy"
+              "close-up, portrait, headshot, cropped animal, head only, missing limb, "
+              "hidden leg, obscured leg, fused legs, overlapping legs, missing paw, "
+              "cut off paws, cut off tail, duplicate tail, extra limbs, "
+              "mirrored symmetrical anatomy"
           ),
           "width": 1024,
           "height": 768,
