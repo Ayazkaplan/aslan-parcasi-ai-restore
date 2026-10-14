@@ -459,6 +459,23 @@ def _animal_subject(prompt):
   return None
 
 
+def _is_simple_animal_request(topic, animal_subject):
+  remaining = re.sub(
+      rf"\b{re.escape(animal_subject)}\b",
+      " ",
+      topic,
+      flags=re.IGNORECASE,
+  )
+  remaining = re.sub(
+      r"\b(?:bir|a|an|the|please|lütfen|bana|draw|create|generate|make|show|"
+      r"image|picture|photo|photograph|çiz\w*|oluştur\w*|resmet\w*|göster\w*)\b",
+      " ",
+      remaining,
+      flags=re.IGNORECASE,
+  )
+  return not re.sub(r"[\W_]", "", remaining)
+
+
 def _has_explicit_close_up(prompt):
   return bool(re.search(
       r"\b(close[- ]?up|extreme close[- ]?up|headshot|macro|"
@@ -495,6 +512,11 @@ def enhance_image_prompt(prompt):
 
   explicit_close_up = _has_explicit_close_up(raw + " " + english)
   animal_subject = _animal_subject(raw + " " + english)
+  if animal_subject and _is_simple_animal_request(topic, animal_subject):
+    return (
+        f"A natural, photorealistic image of a {animal_subject} "
+        "in a believable pose and natural setting."
+    )
 
   if re.search(r"\b(mouse\s*pad|mouse\s*mat|mousepad|fare\s+altl[ıi]ğ[ıi])\b", raw, re.I):
     return (
@@ -550,21 +572,8 @@ def enhance_image_prompt(prompt):
   if not explicit_close_up:
     if animal_subject:
       framing_direction = (
-          f"Full-body animal photograph of the entire {animal_subject}, composed as "
-          "a pulled-back landscape environmental photograph from several meters away. "
-          "Show its complete head, torso, every leg and paw or hoof, and the single "
-          "tail fully inside the frame; the animal must occupy no more than 55 percent "
-          "of the image height, with visible ground and generous space around it. "
-          "For four-legged animals, show exactly four distinct legs: both front legs "
-          "and both hind legs, each with its own fully visible paw or hoof. Keep a clear "
-          "gap between the legs so none overlap or disappear behind the torso; ground "
-          "all four feet naturally with a visible contact shadow. "
-          "Use an eye-level full shot, never a portrait, headshot, or close-up; do not "
-          "crop or cut off any body part. Capture a natural candid three-quarter pose "
-          "with the body slightly turned, one forepaw slightly ahead, gaze just off-camera, "
-          "and uneven relaxed weight distribution. Avoid a front-facing symmetrical pose. "
-          "The single tail must emerge and curve on one side only. Keep the anatomy "
-          "natural and asymmetric; never mirror or duplicate body parts."
+          "Create a natural image of the requested animal with a believable pose "
+          "and composition suited to the brief."
       )
     else:
       framing_direction = (
@@ -2923,6 +2932,9 @@ def generate_masked_image_edit(prompt, source_image, selection_mask):
   except (OSError, Image.DecompressionBombError) as error:
     raise ValueError("Kaynak görsel veya fırça seçimi okunamadı.") from error
 
+  if _requests_pose_change(prompt):
+    return generate_image_with_cloudflare(prompt, source_image)
+
   width, height = source.size
   margin = max(48, round(max(width, height) * 0.08))
   crop_bounds = (
@@ -3304,7 +3316,7 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
         encoded_image = base64.b64encode(image_bytes).decode("ascii")
       return f"data:{mime_type};base64,{encoded_image}"
 
-    animal_full_body = (
+    animal_generation = (
         _animal_subject(prompt) is not None
         and not _has_explicit_close_up(prompt)
     )
@@ -3312,17 +3324,8 @@ def generate_image_with_cloudflare(prompt, source_image=None, selection_mask=Non
         "prompt": enhance_image_prompt(prompt),
         "num_steps": 4,
     }
-    if animal_full_body:
-      payload.update({
-          "negative_prompt": (
-              "close-up, portrait, headshot, cropped animal, head only, missing limb, "
-              "hidden leg, obscured leg, fused legs, overlapping legs, missing paw, "
-              "cut off paws, cut off tail, duplicate tail, extra limbs, "
-              "mirrored symmetrical anatomy"
-          ),
-          "width": 1024,
-          "height": 768,
-      })
+    if animal_generation:
+      payload["negative_prompt"] = "extra limbs, duplicate tails, mirrored anatomy"
     response = requests.post(
         endpoint,
         headers={

@@ -869,31 +869,30 @@ class ImageGenerationTests(TestCase):
         self.assertEqual(prompt.count("clearly visible branded product packaging"), 1)
         self.assertIn("carefully art-directed", prompt)
 
-    def test_default_photo_prompt_frames_the_complete_subject_and_scene(self):
-        prompt = views.enhance_image_prompt("Bir kedi oluştur")
+    def test_simple_cat_request_becomes_a_natural_image_prompt(self):
+        prompt = views.enhance_image_prompt("Bir kedi çiz")
 
-        self.assertIn("Full-body animal photograph of the entire cat", prompt)
-        self.assertIn("every leg and paw", prompt)
-        self.assertIn("show exactly four distinct legs", prompt)
-        self.assertIn("both front legs and both hind legs", prompt)
-        self.assertIn("a clear gap between the legs", prompt)
-        self.assertIn("never a portrait, headshot, or close-up", prompt)
-        self.assertIn("natural candid three-quarter pose", prompt)
-        self.assertIn("single tail must emerge and curve on one side only", prompt)
-        self.assertIn("never mirror or duplicate body parts", prompt)
-        self.assertLess(
-            prompt.index("Full-body animal photograph"),
-            prompt.index("Exact user brief"),
+        self.assertEqual(
+            prompt,
+            "A natural, photorealistic image of a cat in a believable pose and natural setting.",
         )
-        self.assertIn("full-frame camera", prompt)
-        self.assertIn("subtle natural imperfections", prompt)
+        self.assertNotIn("çiz", prompt)
+
+    def test_animal_photo_prompt_does_not_force_pose_or_full_body_framing(self):
+        prompt = views.enhance_image_prompt("Fotogerçekçi turuncu bir kedi")
+
+        self.assertIn("Create a natural image of the requested animal", prompt)
+        self.assertIn("believable pose and composition suited to the brief", prompt)
+        self.assertNotIn("Full-body animal photograph", prompt)
+        self.assertNotIn("exactly four distinct legs", prompt)
+        self.assertNotIn("Avoid a front-facing symmetrical pose", prompt)
 
     def test_explicit_close_up_request_keeps_close_up_framing(self):
         prompt = views.enhance_image_prompt("Kedinin yüzünü yakın çekim oluştur")
 
         self.assertNotIn("Full-body animal photograph", prompt)
 
-    def test_animal_generation_uses_landscape_and_negative_crop_constraints(self):
+    def test_animal_generation_uses_natural_anatomy_constraints_without_forced_framing(self):
         response = Mock()
         response.status_code = 200
         response.headers = {"Content-Type": "image/png"}
@@ -905,13 +904,15 @@ class ImageGenerationTests(TestCase):
             views.generate_image_with_cloudflare("Fotogerçekçi turuncu bir kedi")
 
         payload = post.call_args.kwargs["json"]
-        self.assertEqual((payload["width"], payload["height"]), (1024, 768))
         self.assertEqual(payload["num_steps"], 4)
-        self.assertIn("close-up", payload["negative_prompt"])
-        self.assertIn("missing limb", payload["negative_prompt"])
-        self.assertIn("obscured leg", payload["negative_prompt"])
-        self.assertIn("duplicate tail", payload["negative_prompt"])
-        self.assertIn("Full-body animal photograph", payload["prompt"])
+        self.assertEqual(
+            payload["negative_prompt"],
+            "extra limbs, duplicate tails, mirrored anatomy",
+        )
+        self.assertNotIn("width", payload)
+        self.assertNotIn("height", payload)
+        self.assertNotIn("close-up", payload["negative_prompt"])
+        self.assertNotIn("Full-body animal photograph", payload["prompt"])
 
     def test_animal_close_up_does_not_receive_full_body_constraints(self):
         response = Mock()
@@ -956,7 +957,7 @@ class ImageGenerationTests(TestCase):
         self.assertLess(len(prompt), 200)
         self.assertNotIn(user_prompt, prompt)
 
-    def test_masked_pose_edit_does_not_add_an_instruction_to_preserve_the_pose(self):
+    def test_pose_edit_uses_the_full_image_instead_of_preserving_unselected_pose_pixels(self):
         source = views.Image.new("RGB", (32, 32), "orange")
         source_buffer = io.BytesIO()
         source.save(source_buffer, format="PNG")
@@ -966,22 +967,21 @@ class ImageGenerationTests(TestCase):
         source_data = base64.b64encode(source_buffer.getvalue()).decode("ascii")
         mask_data = base64.b64encode(mask_buffer.getvalue()).decode("ascii")
 
+        source_image = {"mime_type": "image/png", "data": source_data}
+        selection_mask = {"mime_type": "image/png", "data": mask_data}
+        prompt = "Bu kediyi oturur bir pozisyonda istiyorum"
         with patch(
             "dashboard.views.generate_image_with_cloudflare",
             return_value="data:image/png;base64,"
             + base64.b64encode(source_buffer.getvalue()).decode("ascii"),
         ) as generate:
             views.generate_masked_image_edit(
-                "Bu kediyi oturur bir pozisyonda istiyorum",
-                {"mime_type": "image/png", "data": source_data},
-                {"mime_type": "image/png", "data": mask_data},
+                prompt,
+                source_image,
+                selection_mask,
             )
 
-        prompt = generate.call_args.args[0]
-        self.assertIn("Change the existing cat's pose to sitting", prompt)
-        self.assertIn("recognizably the same animal", prompt)
-        self.assertNotIn("Bu kediyi oturur", prompt)
-        self.assertNotIn("Preserve the identity, shape, pose", prompt)
+        generate.assert_called_once_with(prompt, source_image)
 
     def test_cloudflare_requires_server_side_credentials(self):
         with patch.dict(os.environ, {}, clear=True):
