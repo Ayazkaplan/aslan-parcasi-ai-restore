@@ -945,10 +945,11 @@ class ImageGenerationTests(TestCase):
         prompt = views._image_edit_instruction(user_prompt)
 
         self.assertTrue(views._requests_pose_change(user_prompt))
-        self.assertIn("Change the existing cat's pose as requested", prompt)
+        self.assertEqual(views._requested_pose(user_prompt), "sitting")
+        self.assertIn("Change the existing cat's pose to sitting", prompt)
         self.assertIn("Keep it recognizably the same animal", prompt)
         self.assertLess(len(prompt), 200)
-        self.assertIn(user_prompt, prompt)
+        self.assertNotIn(user_prompt, prompt)
 
     def test_masked_pose_edit_does_not_add_an_instruction_to_preserve_the_pose(self):
         source = views.Image.new("RGB", (32, 32), "orange")
@@ -972,8 +973,9 @@ class ImageGenerationTests(TestCase):
             )
 
         prompt = generate.call_args.args[0]
-        self.assertIn("Change the pose as requested", prompt)
-        self.assertIn("recognizably the same cat", prompt)
+        self.assertIn("Change the existing cat's pose to sitting", prompt)
+        self.assertIn("recognizably the same animal", prompt)
+        self.assertNotIn("Bu kediyi oturur", prompt)
         self.assertNotIn("Preserve the identity, shape, pose", prompt)
 
     def test_cloudflare_requires_server_side_credentials(self):
@@ -1176,8 +1178,9 @@ class ImageGenerationTests(TestCase):
             )
 
         payload = post.call_args.kwargs["json"]
-        self.assertIn("subject's pose as requested", payload["prompt"])
+        self.assertIn("pose to sitting", payload["prompt"])
         self.assertIn("recognizably the same animal", payload["prompt"])
+        self.assertNotIn("Bu kediyi oturur", payload["prompt"])
         self.assertNotIn("changed coat pattern", payload["negative_prompt"])
 
     def test_cloudflare_inpainting_503_falls_back_to_sdxl_lightning(self):

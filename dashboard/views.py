@@ -421,6 +421,20 @@ def _requests_pose_change(prompt):
   ))
 
 
+def _requested_pose(prompt):
+  poses = (
+      (r"\b(?:otur\w*|sitting|seated|sit)\b", "sitting"),
+      (r"\b(?:yat\w*|lying|lie)\b", "lying down"),
+      (r"\b(?:ayakta|standing|stand)\b", "standing"),
+      (r"\b(?:koş\w*|kos\w*|running|run)\b", "running"),
+      (r"\b(?:zıpla\w*|zipla\w*|jump\w*)\b", "jumping"),
+  )
+  for pattern, pose in poses:
+    if re.search(pattern, prompt or "", re.IGNORECASE):
+      return pose
+  return None
+
+
 def _animal_subject(prompt):
   subjects = (
       (r"\b(?:kedi\w*|cat)\b", "cat"),
@@ -2920,12 +2934,11 @@ def generate_masked_image_edit(prompt, source_image, selection_mask):
   pose_change_requested = _requests_pose_change(prompt)
   edit_prompt = (
       "Make this precise photo edit: "
-      + prompt.strip()
+      + _image_edit_instruction(prompt)
       + ". The supplied image is a crop around the area selected by the user. "
       "Apply the requested change naturally and realistically. "
       + (
-          "Change the pose as requested; keep it recognizably the same cat and infer "
-          "a natural way to make the change. Leave unrequested details unchanged. "
+          "Keep it recognizably the same animal and leave unrequested details unchanged. "
           if pose_change_requested
           else "Preserve the identity, shape, pose, perspective, lighting, and all "
           "surrounding details that the request does not ask to change. "
@@ -3018,6 +3031,12 @@ def _image_edit_instruction(prompt):
 
   if pose_change_requested:
     subject_description = f"the existing {subject}" if subject else "the existing subject"
+    requested_pose = _requested_pose(text)
+    if requested_pose:
+        return (
+            f"Change {subject_description}'s pose to {requested_pose}. Keep it "
+            "recognizably the same animal and make the change look natural."
+        )
     return (
         f"Change {subject_description}'s pose as requested. Keep it recognizably the "
         f"same animal and make the change look natural. Request: {text}"
