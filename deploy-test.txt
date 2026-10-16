@@ -1,0 +1,4 @@
+Aslan Parçası AI — deploy smoke test
+Bu dosya push -> Render otomatik deploy hattını doğrulamak için eklendi.
+Olusturma: 2026-10-16 (Europe/Istanbul)
+Not: Test basariliysa bu dosya silinebilir.
